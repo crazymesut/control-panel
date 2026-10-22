@@ -1,0 +1,57 @@
+<style>
+  button[data-loading] { opacity: .6; cursor: wait; }
+</style>
+<script>
+// ── Form butonları: işlem sürerken tekrar tıklamayı engelle, loading göster ──
+(() => {
+  const SPINNER = `
+    <svg class="inline-block animate-spin mr-1.5" aria-hidden="true"
+      style="width:14px;height:14px;vertical-align:-2px"
+      xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+      <path class="opacity-75" fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+    </svg>İşleniyor…`;
+
+  const originals = new WeakMap();
+
+  function setLoading(form, btn) {
+    form.dataset.submitting = '1';
+    if (!btn) return;
+    originals.set(btn, { html: btn.innerHTML, minWidth: btn.style.minWidth });
+    btn.style.minWidth = btn.offsetWidth + 'px';  // metin değişince buton zıplamasın
+    btn.dataset.loading = '1';
+    btn.setAttribute('aria-busy', 'true');
+    btn.innerHTML = SPINNER;
+    btn.disabled = true;
+  }
+
+  function reset(form) {
+    delete form.dataset.submitting;
+    form.querySelectorAll('button[data-loading]').forEach(btn => {
+      const o = originals.get(btn);
+      if (o) { btn.innerHTML = o.html; btn.style.minWidth = o.minWidth; }
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      delete btn.dataset.loading;
+    });
+  }
+
+  // document seviyesinde (bubble) dinlenir: formun satır içi
+  // onsubmit="return confirm(...)" işleyicisi her zaman bundan önce çalışır.
+  document.addEventListener('submit', e => {
+    if (e.defaultPrevented) return;               // confirm() iptal edildi
+    const form = e.target;
+    if (form.dataset.submitting) {                // işlem sürüyor: ikinci gönderimi düşür
+      e.preventDefault();
+      return;
+    }
+    setLoading(form, e.submitter || form.querySelector('button[type="submit"], button:not([type])'));
+  });
+
+  // Geri/ileri ile bfcache'den dönülürse butonlar eski haline gelsin
+  window.addEventListener('pageshow', e => {
+    if (e.persisted) document.querySelectorAll('form[data-submitting]').forEach(reset);
+  });
+})();
+</script>
