@@ -196,8 +196,21 @@ python3 -m venv "$PANEL_DIR/venv"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -d "$SCRIPT_DIR/panel" ]]; then
-    cp -r "$SCRIPT_DIR/panel/"* "$PANEL_DIR/"
+    # Çalışma zamanı verileri (DB, ayarlar, .env) üzerine yazılmaz
+    tar -C "$SCRIPT_DIR/panel" \
+        --exclude='panel.db' --exclude='panel.db-*' --exclude='panel.db.example' \
+        --exclude='settings.json' --exclude='.env' \
+        -cf - . | tar -C "$PANEL_DIR" -xf -
     log "Panel dosyaları kopyalandı"
+
+    # Veritabanı yalnızca ilk kurulumda şablondan oluşturulur; varsa dokunulmaz
+    if [[ ! -f "$PANEL_DIR/panel.db" ]]; then
+        cp "$SCRIPT_DIR/panel/panel.db.example" "$PANEL_DIR/panel.db"
+        chmod 600 "$PANEL_DIR/panel.db"
+        log "Yeni veritabanı oluşturuldu (panel.db.example)"
+    else
+        log "Mevcut veritabanı korundu (panel.db)"
+    fi
 else
     error "Panel dosyaları bulunamadı! 'panel/' dizininin setup.sh ile aynı yerde olduğundan emin olun."
 fi

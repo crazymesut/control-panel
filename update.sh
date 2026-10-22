@@ -21,20 +21,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo -e "\n${BOLD}━━━ VPS Panel Güncelleniyor ━━━${NC}\n"
 
-# Panel dosyalarını kopyala (panel.db ve settings.json korunur)
+# Panel dosyalarını kopyala (panel.db, settings.json ve .env hiç dokunulmaz)
 info "Dosyalar kopyalanıyor..."
-# Önce kritik dosyaları yedekle
-for protected in panel.db settings.json; do
-    [[ -f "$PANEL_DIR/$protected" ]] && cp "$PANEL_DIR/$protected" "/tmp/${protected}.update-bak"
-done
-cp -r "$SCRIPT_DIR/panel/"* "$PANEL_DIR/"
-# Yedekleri geri yükle
-for protected in panel.db settings.json; do
-    if [[ -f "/tmp/${protected}.update-bak" ]]; then
-        cp "/tmp/${protected}.update-bak" "$PANEL_DIR/$protected"
-        rm "/tmp/${protected}.update-bak"
-    fi
-done
+tar -C "$SCRIPT_DIR/panel" \
+    --exclude='panel.db' --exclude='panel.db-*' --exclude='panel.db.example' \
+    --exclude='settings.json' --exclude='.env' \
+    -cf - . | tar -C "$PANEL_DIR" -xf -
 log "Panel dosyaları güncellendi (DB ve ayarlar korundu)"
 
 # Yeni Python bağımlılıklarını yükle

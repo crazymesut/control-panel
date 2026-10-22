@@ -72,7 +72,7 @@ Set `PANEL_EMAIL` to a real address before requesting certificates. Generated cr
 
 ### Current installation caveats
 
-- The repository includes `panel/panel.db`, and setup copies it to the installation directory. For a fresh installation, move this bundled database out of `panel/` before running setup so that the application creates a new database. Environment variables create an admin only when that username does not already exist; they do not reset existing passwords.
+- The repository ships only a schema template, `panel/panel.db.example`. Setup copies it to `/opt/vps-panel/panel.db` only when that file does not exist; an existing database is never touched, so re-running setup or updating cannot overwrite live data. Environment variables create an admin only when that username does not already exist; they do not reset existing passwords, so re-running setup on an existing installation prints a new password that does not apply.
 - The installer writes the Nginx upstream as `${PANEL_PORT}0`, but starts Uvicorn on `PANEL_PORT + 10000`. With defaults these are `87650` and `18765`. Before installation, correct the `proxy_pass` line in `setup.sh` to use `http://127.0.0.1:$((PANEL_PORT + 10000))`. Otherwise Nginx validation or panel access can fail.
 - On a retry, if Nginx reports that `sites-enabled/vps-users` is a directory, check that `/etc/nginx/nginx.conf` includes `/etc/nginx/sites-enabled/*.conf` and `/etc/nginx/sites-enabled/vps-users/*.conf`. Setup currently adjusts these includes after its first Nginx validation.
 
@@ -120,7 +120,7 @@ git pull --ff-only
 sudo bash update.sh
 ```
 
-The update script replaces application files, preserves the installed `panel.db` and `settings.json`, upgrades Python dependencies, and restarts the service. It leaves `.env` in place and does not rerun system, firewall, or Nginx setup. Back up the installation and user data before updating. Restarting the service clears in-memory login sessions.
+The update script replaces application files, never touches the installed `panel.db`, `settings.json`, or `.env`, upgrades Python dependencies, and restarts the service. It leaves `.env` in place and does not rerun system, firewall, or Nginx setup. Back up the installation and user data before updating. Restarting the service clears in-memory login sessions.
 
 ```bash
 sudo systemctl status vps-panel
@@ -140,7 +140,7 @@ control-panel/
 ├── update.sh                 # Application updater
 └── panel/
     ├── main.py               # FastAPI application and SQLite initialization
-    ├── panel.db              # Bundled SQLite database; see installation caveats
+    ├── panel.db.example      # Empty SQLite schema; copied to panel.db on first install only
     ├── scripts/
     │   ├── create_user.sh    # Linux user and rootless Docker provisioning
     │   └── delete_user.sh    # User and home directory removal

@@ -72,7 +72,7 @@ Sertifika istemeden önce `PANEL_EMAIL` için gerçek bir adres belirtin. Oluşt
 
 ### Mevcut kurulumla ilgili notlar
 
-- Depoda `panel/panel.db` bulunur ve kurulum bu dosyayı hedef dizine kopyalar. Temiz kurulumda uygulamanın yeni bir veritabanı oluşturması için bu dosyayı kurulumu çalıştırmadan önce `panel/` dışına taşıyın. Ortam değişkenleri yalnızca aynı kullanıcı adı mevcut değilse yönetici oluşturur; mevcut şifreleri sıfırlamaz.
+- Depoda yalnızca şema şablonu olan `panel/panel.db.example` bulunur. Kurulum bu dosyayı yalnızca `/opt/vps-panel/panel.db` yoksa oraya kopyalar; mevcut veritabanına asla dokunulmaz, bu nedenle kurulumu yeniden çalıştırmak veya güncelleme yapmak canlı verinin üzerine yazmaz. Ortam değişkenleri yalnızca aynı kullanıcı adı mevcut değilse yönetici oluşturur; mevcut şifreleri sıfırlamaz. Bu yüzden mevcut bir kurulumda `setup.sh`'i yeniden çalıştırınca gösterilen yeni şifre geçerli olmaz.
 - Kurulum betiği Nginx hedefini `${PANEL_PORT}0` olarak yazarken Uvicorn'u `PANEL_PORT + 10000` portunda başlatır. Varsayılan değerlerle bunlar `87650` ve `18765` olur. Kurulumdan önce `setup.sh` içindeki `proxy_pass` satırının hedefini `http://127.0.0.1:$((PANEL_PORT + 10000))` olarak düzeltin. Aksi durumda Nginx doğrulaması veya panele erişim başarısız olabilir.
 - Kurulumu tekrar çalıştırırken Nginx, `sites-enabled/vps-users` yolunun bir dizin olduğunu bildirirse `/etc/nginx/nginx.conf` içinde `/etc/nginx/sites-enabled/*.conf` ve `/etc/nginx/sites-enabled/vps-users/*.conf` include satırlarını kontrol edin. Betik bu düzenlemeleri şu anda ilk Nginx doğrulamasından sonra yapar.
 
@@ -120,7 +120,7 @@ git pull --ff-only
 sudo bash update.sh
 ```
 
-Güncelleme betiği uygulama dosyalarını değiştirir, kurulu `panel.db` ve `settings.json` dosyalarını korur, Python bağımlılıklarını yükseltir ve servisi yeniden başlatır. `.env` dosyasını yerinde bırakır; sistem, güvenlik duvarı veya Nginx kurulumunu tekrar çalıştırmaz. Güncellemeden önce kurulumu ve kullanıcı verilerini yedekleyin. Servisin yeniden başlaması bellekteki giriş oturumlarını temizler.
+Güncelleme betiği uygulama dosyalarını değiştirir, kurulu `panel.db`, `settings.json` ve `.env` dosyalarına hiç dokunmaz, Python bağımlılıklarını yükseltir ve servisi yeniden başlatır. `.env` dosyasını yerinde bırakır; sistem, güvenlik duvarı veya Nginx kurulumunu tekrar çalıştırmaz. Güncellemeden önce kurulumu ve kullanıcı verilerini yedekleyin. Servisin yeniden başlaması bellekteki giriş oturumlarını temizler.
 
 ```bash
 sudo systemctl status vps-panel
@@ -140,7 +140,7 @@ control-panel/
 ├── update.sh                 # Uygulama güncellemesi
 └── panel/
     ├── main.py               # FastAPI uygulaması ve SQLite başlangıç işlemleri
-    ├── panel.db              # Depodaki SQLite veritabanı; kurulum notlarına bakın
+    ├── panel.db.example      # Boş SQLite şeması; yalnızca ilk kurulumda panel.db olarak kopyalanır
     ├── scripts/
     │   ├── create_user.sh    # Linux kullanıcısı ve rootless Docker kurulumu
     │   └── delete_user.sh    # Kullanıcı ve ev dizini silme
