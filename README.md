@@ -13,6 +13,7 @@ A web control panel for managing Linux users, per-user rootless Docker environme
 - Route domains to local application ports through Nginx.
 - Request and renew Let's Encrypt certificates using Certbot.
 - Configure a dedicated panel domain and HTTPS from the settings page.
+- Activity log of logins (including failed attempts), user, domain, SSL, and settings changes, with filters on the Logs page and a recent-activity card on the dashboard. The latest 10,000 entries are kept in `panel.db`.
 - List running containers for each user.
 - Installer for systemd, UFW, Fail2ban, Nginx, Docker, and Python dependencies.
 

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Kayıtlar — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-bold text-white">Kayıtlar</h1>
+  <p class="text-gray-500 text-sm mt-0.5">Panelde yapılan işlemlerin geçmişi</p>
+</div>
+
+<!-- Filtreler -->
+<div class="mb-4 flex flex-wrap items-center gap-x-8 gap-y-2 text-xs">
+  <div class="flex flex-wrap items-center gap-1.5">
+    <span class="text-gray-600 mr-1">Tür</span>
+    <a href="/logs?status={{ status }}"
+      class="px-2.5 py-1 rounded-full transition-colors {% if not category %}bg-indigo-600/20 text-indigo-400{% else %}bg-gray-800 text-gray-400 hover:text-white{% endif %}">Tümü</a>
+    {% for key, label in categories.items() %}
+    <a href="/logs?category={{ key }}&status={{ status }}"
+      class="px-2.5 py-1 rounded-full transition-colors {% if category == key %}bg-indigo-600/20 text-indigo-400{% else %}bg-gray-800 text-gray-400 hover:text-white{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <div class="flex items-center gap-1.5">
+    <span class="text-gray-600 mr-1">Durum</span>
+    <a href="/logs?category={{ category }}"
+      class="px-2.5 py-1 rounded-full transition-colors {% if not status %}bg-indigo-600/20 text-indigo-400{% else %}bg-gray-800 text-gray-400 hover:text-white{% endif %}">Tümü</a>
+    <a href="/logs?category={{ category }}&status=ok"
+      class="px-2.5 py-1 rounded-full transition-colors {% if status == 'ok' %}bg-indigo-600/20 text-indigo-400{% else %}bg-gray-800 text-gray-400 hover:text-white{% endif %}">Başarılı</a>
+    <a href="/logs?category={{ category }}&status=error"
+      class="px-2.5 py-1 rounded-full transition-colors {% if status == 'error' %}bg-indigo-600/20 text-indigo-400{% else %}bg-gray-800 text-gray-400 hover:text-white{% endif %}">Hatalı</a>
+  </div>
+</div>
+
+<!-- Kayıt Tablosu -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-500 text-xs uppercase tracking-wide border-b border-gray-800">
+        <th class="px-5 py-3 text-left">Zaman</th>
+        <th class="px-5 py-3 text-left">Yönetici</th>
+        <th class="px-5 py-3 text-left">İşlem</th>
+        <th class="px-5 py-3 text-left">Hedef</th>
+        <th class="px-5 py-3 text-left">Detay</th>
+        <th class="px-5 py-3 text-left">Durum</th>
+        <th class="px-5 py-3 text-left">IP</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800/50">
+      {% for e in entries %}
+      <tr class="hover:bg-gray-800/30 transition-colors">
+        <td class="px-5 py-3 text-gray-500 text-xs whitespace-nowrap">
+          <time class="log-ts" datetime="{{ e.created_at.replace(' ', 'T') }}Z">{{ e.created_at[:16] }}</time>
+        </td>
+        <td class="px-5 py-3 font-mono text-indigo-300 text-xs">{{ e.admin or '—' }}</td>
+        <td class="px-5 py-3 text-gray-200 whitespace-nowrap" title="{{ e.action }}">{{ ACTION_LABELS.get(e.action, e.action) }}</td>
+        <td class="px-5 py-3 font-mono text-emerald-300 text-xs break-all">{{ e.target }}</td>
+        <td class="px-5 py-3 text-gray-500 text-xs break-words max-w-xs">{{ e.detail }}</td>
+        <td class="px-5 py-3">
+          <span class="px-2 py-0.5 rounded-full text-xs
+            {% if e.status == 'ok' %}bg-emerald-900/50 text-emerald-400{% else %}bg-red-900/50 text-red-400{% endif %}">
+            {% if e.status == 'ok' %}✓ Başarılı{% else %}✗ Hata{% endif %}
+          </span>
+        </td>
+        <td class="px-5 py-3 text-gray-600 font-mono text-xs">{{ e.ip }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="7" class="px-5 py-10 text-center text-gray-600">
+          {% if category or status %}Bu filtreyle eşleşen kayıt yok.{% else %}Henüz kayıt yok.{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Sayfalama -->
+{% if pages > 1 %}
+<div class="mt-4 flex items-center justify-between text-xs text-gray-500">
+  <span>{{ total }} kayıt · Sayfa {{ page }} / {{ pages }}</span>
+  <div class="flex items-center gap-2">
+    {% if page > 1 %}
+    <a href="/logs?category={{ category }}&status={{ status }}&page={{ page - 1 }}" class="btn-secondary">← Önceki</a>
+    {% endif %}
+    {% if page < pages %}
+    <a href="/logs?category={{ category }}&status={{ status }}&page={{ page + 1 }}" class="btn-secondary">Sonraki →</a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% include "_localtime.html" %}
+{% endblock %}

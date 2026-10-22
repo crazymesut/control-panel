@@ -13,6 +13,7 @@ Bir VPS üzerinde Linux kullanıcılarını, kullanıcı bazlı rootless Docker 
 - Nginx üzerinden domainleri yerel uygulama portlarına yönlendirme.
 - Certbot ile Let's Encrypt sertifikası alma ve yenileme.
 - Ayarlar sayfasından panele özel domain ve HTTPS tanımlama.
+- Girişleri (başarısız denemeler dahil), kullanıcı, domain, SSL ve ayar değişikliklerini kaydeden aktivite günlüğü: Kayıtlar sayfasında filtrelenebilir, dashboard'da son aktiviteler kartı olarak görünür. `panel.db` içinde son 10.000 kayıt tutulur.
 - Kullanıcıların çalışan containerlarını listeleme.
 - systemd, UFW, Fail2ban, Nginx, Docker ve Python bağımlılıklarını hazırlayan kurulum betiği.
 

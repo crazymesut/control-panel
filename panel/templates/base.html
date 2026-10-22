@@ -40,6 +40,10 @@
         {% if '/domains' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
         <span>🌐</span> Domainler
       </a>
+      <a href="/logs" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
+        {% if '/logs' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span>📜</span> Kayıtlar
+      </a>
       <a href="/settings" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
         {% if '/settings' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
         <span>⚙️</span> Ayarlar

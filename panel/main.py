@@ -65,6 +65,16 @@ def init_db():
             ssl_enabled   INTEGER DEFAULT 0,
             created_at    TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id            INTEGER PRIMARY KEY,
+            created_at    TEXT DEFAULT (datetime('now')),
+            admin         TEXT DEFAULT '',
+            action        TEXT NOT NULL,
+            target        TEXT DEFAULT '',
+            detail        TEXT DEFAULT '',
+            status        TEXT DEFAULT 'ok',
+            ip            TEXT DEFAULT ''
+        );
     """)
     db.commit()
 
@@ -118,6 +128,54 @@ def run(cmd: list[str], check=True) -> tuple[int, str, str]:
     if check and r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or r.stdout.strip())
     return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+# ── Aktivite kayıtları ─────────────────────────────────────
+LOG_KEEP      = 10000   # en son bu kadar kayıt tutulur
+LOG_PAGE_SIZE = 50
+LOG_CATEGORIES = {"auth": "Oturum", "user": "Kullanıcı", "domain": "Domain",
+                  "ssl": "SSL", "settings": "Ayarlar"}
+ACTION_LABELS = {
+    "auth.login":            "Giriş",
+    "auth.login_failed":     "Başarısız giriş",
+    "auth.logout":           "Çıkış",
+    "user.create":           "Kullanıcı oluşturma",
+    "user.delete":           "Kullanıcı silme",
+    "user.toggle":           "Kullanıcı aktif/pasif",
+    "domain.create":         "Domain ekleme",
+    "domain.delete":         "Domain silme",
+    "ssl.issue":             "SSL sertifikası alma",
+    "ssl.renew":             "SSL yenileme",
+    "settings.domain":       "Panel domain ayarı",
+    "settings.domain_remove": "Panel domain kaldırma",
+}
+templates.env.globals["ACTION_LABELS"] = ACTION_LABELS
+
+def client_ip(request: Request) -> str:
+    # Uvicorn yalnızca 127.0.0.1'de dinler; X-Real-IP'yi nginx kendisi yazar
+    return request.headers.get("x-real-ip") or (request.client.host if request.client else "")
+
+def log_action(request: Request, action: str, target: str = "", detail: str = "",
+               status: str = "ok", admin: Optional[str] = None):
+    """Aktivite kaydı yaz. Ayrı bağlantı kullanır, bu yüzden çağıran kendi
+    yazma işlemini commit/rollback ettikten SONRA çağrılmalıdır (aksi halde
+    SQLite kilitlenir). Kayıt yazılamazsa asıl işlemi bozmaz."""
+    try:
+        if admin is None:
+            s = session_get(request)
+            admin = s["admin"] if s else ""
+        db = get_db()
+        try:
+            db.execute(
+                "INSERT INTO activity_log (admin, action, target, detail, status, ip) "
+                "VALUES (?,?,?,?,?,?)",
+                (admin, action, target[:200], detail[:500], status, client_ip(request)[:45]))
+            db.execute("DELETE FROM activity_log WHERE id <= (SELECT MAX(id) FROM activity_log) - ?",
+                       (LOG_KEEP,))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
 
 def nginx_reload():
     run(["nginx", "-t"])
@@ -204,14 +262,18 @@ async def login_post(request: Request, username: str = Form(...), password: str 
     if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
         sid = secrets.token_hex(32)
         _sessions[sid] = {"admin": username}
+        log_action(request, "auth.login", admin=username)
         resp = RedirectResponse("/", status_code=302)
         resp.set_cookie("sid", sid, httponly=True, samesite="lax", max_age=86400*7)
         return resp
+    log_action(request, "auth.login_failed", username, status="error", admin="")
     return templates.TemplateResponse(request, "login.html",
         {"error": "Kullanıcı adı veya şifre hatalı"})
 
 @app.get("/logout")
 async def logout(request: Request):
+    if session_get(request):
+        log_action(request, "auth.logout")
     sid = request.cookies.get("sid")
     _sessions.pop(sid, None)
     resp = RedirectResponse("/login", status_code=302)
@@ -228,6 +290,7 @@ async def dashboard(request: Request, session=Depends(require_login)):
     domains = db.execute(
         "SELECT d.*, u.username FROM domains d JOIN users u ON d.user_id=u.id ORDER BY d.created_at DESC"
     ).fetchall()
+    recent_logs = db.execute("SELECT * FROM activity_log ORDER BY id DESC LIMIT 8").fetchall()
     db.close()
 
     cpu  = psutil.cpu_percent(interval=0.5)
@@ -237,6 +300,7 @@ async def dashboard(request: Request, session=Depends(require_login)):
         "admin":   session["admin"],
         "users":   users,
         "domains": domains,
+        "recent_logs": recent_logs,
         "cpu":     cpu,
         "mem_used":  round(mem.used / 1024**3, 1),
         "mem_total": round(mem.total / 1024**3, 1),
@@ -301,11 +365,14 @@ async def user_create(request: Request, session=Depends(require_login),
         db.commit()
         write_nginx_domain(main_domain, default_port, ssl=False)
 
+        log_action(request, "user.create", username,
+                   f"port {port_start}-{port_start+999}, domain {main_domain}")
         return RedirectResponse(
             f"/users?msg=Kullanıcı+{username}+oluşturuldu+(Port:+{port_start}-{port_start+999},+Domain:+{main_domain})",
             status_code=302)
     except Exception as e:
         db.rollback()
+        log_action(request, "user.create", username, str(e), status="error")
         return RedirectResponse(f"/users?err={str(e)[:120]}", status_code=302)
     finally:
         db.close()
@@ -327,7 +394,12 @@ async def user_delete(request: Request, session=Depends(require_login),
         db.commit()
         # Linux kullanıcısını ve Docker rootless'ı sil
         script = SCRIPTS_DIR / "delete_user.sh"
-        run(["bash", str(script), username], check=False)
+        rc, out, err = run(["bash", str(script), username], check=False)
+        detail = ("domainler: " + ", ".join(d["domain"] for d in doms)) if doms else ""
+        if rc != 0:
+            detail = f"DB'den silindi, sistem kullanıcısı silinemedi: {err or out}"
+        log_action(request, "user.delete", username, detail,
+                   status="ok" if rc == 0 else "error")
         return RedirectResponse(f"/users?msg=Kullanıcı+{username}+silindi", status_code=302)
     finally:
         db.close()
@@ -377,6 +449,7 @@ async def user_toggle(request: Request, session=Depends(require_login),
             pass
 
         durum = "pasif" if new_status == "inactive" else "aktif"
+        log_action(request, "user.toggle", username, f"{row['status']} → {new_status}")
         return RedirectResponse(f"/users?msg=Kullanıcı+{username}+{durum}+yapıldı+(web+erişimi+{'kapatıldı' if new_status == 'inactive' else 'açıldı'})", status_code=302)
     finally:
         db.close()
@@ -424,6 +497,8 @@ async def domain_create(request: Request, session=Depends(require_login),
         db.commit()
         # 1) HTTP nginx config yaz (certbot HTTP-01 challenge için gerekli)
         write_nginx_domain(domain, target_port, ssl=False)
+        log_action(request, "domain.create", domain,
+                   f"port {target_port}, kullanıcı {user['username']}")
         ssl_ok = False
         if get_ssl:
             try:
@@ -432,8 +507,10 @@ async def domain_create(request: Request, session=Depends(require_login),
                 ssl_ok = True
                 db.execute("UPDATE domains SET ssl_enabled=1 WHERE domain=?", (domain,))
                 db.commit()
+                log_action(request, "ssl.issue", domain)
             except RuntimeError as ce:
                 # SSL başarısız → HTTP ile devam et, hata mesajı göster
+                log_action(request, "ssl.issue", domain, str(ce), status="error")
                 return RedirectResponse(
                     f"/domains?msg=Domain+{domain}+eklendi+(SSL+hatası:+{str(ce)[:100]})",
                     status_code=302)
@@ -441,6 +518,7 @@ async def domain_create(request: Request, session=Depends(require_login),
         return RedirectResponse(f"/domains?msg=Domain+{domain}+eklendi{suffix}", status_code=302)
     except Exception as e:
         db.rollback()
+        log_action(request, "domain.create", domain, str(e), status="error")
         return RedirectResponse(f"/domains?err={str(e)[:150]}", status_code=302)
     finally:
         db.close()
@@ -460,8 +538,10 @@ async def domain_ssl(request: Request, session=Depends(require_login),
             certbot_issue(domain)
             db.execute("UPDATE domains SET ssl_enabled=1 WHERE id=?", (domain_id,))
             db.commit()
+            log_action(request, "ssl.issue", domain)
             return RedirectResponse(f"/domains?msg={domain}+için+SSL+sertifikası+alındı", status_code=302)
         except RuntimeError as ce:
+            log_action(request, "ssl.issue", domain, str(ce), status="error")
             return RedirectResponse(f"/domains?err=SSL+hatası:+{str(ce)[:120]}", status_code=302)
     finally:
         db.close()
@@ -483,8 +563,10 @@ async def domain_ssl_renew(request: Request, session=Depends(require_login),
             "--non-interactive",
         ], check=False)
         if rc != 0:
+            log_action(request, "ssl.renew", domain, err or out, status="error")
             return RedirectResponse(f"/domains?err=Yenileme+hatası:+{(err or out)[:120]}", status_code=302)
         nginx_reload()
+        log_action(request, "ssl.renew", domain)
         return RedirectResponse(f"/domains?msg={domain}+SSL+sertifikası+yenilendi", status_code=302)
     finally:
         db.close()
@@ -500,9 +582,44 @@ async def domain_delete(request: Request, session=Depends(require_login),
         remove_nginx_domain(row["domain"])
         db.execute("DELETE FROM domains WHERE id=?", (domain_id,))
         db.commit()
+        log_action(request, "domain.delete", row["domain"])
         return RedirectResponse(f"/domains?msg=Domain+{row['domain']}+silindi", status_code=302)
     finally:
         db.close()
+
+# ══════════════════════════════════════════════════════════
+#  KAYITLAR
+# ══════════════════════════════════════════════════════════
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request, session=Depends(require_login),
+                    category: str = "", status: str = "", page: int = 1):
+    if category not in LOG_CATEGORIES:
+        category = ""
+    if status not in ("ok", "error"):
+        status = ""
+    where, params = [], []
+    if category:
+        where.append("action LIKE ?")
+        params.append(f"{category}.%")
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    db = get_db()
+    total = db.execute(f"SELECT COUNT(*) FROM activity_log {clause}", params).fetchone()[0]
+    pages = max(1, -(-total // LOG_PAGE_SIZE))
+    page = min(max(page, 1), pages)
+    entries = db.execute(
+        f"SELECT * FROM activity_log {clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + [LOG_PAGE_SIZE, (page - 1) * LOG_PAGE_SIZE]
+    ).fetchall()
+    db.close()
+    return templates.TemplateResponse(request, "logs.html", {
+        "admin": session["admin"],
+        "entries": entries, "total": total, "page": page, "pages": pages,
+        "category": category, "status": status, "categories": LOG_CATEGORIES,
+    })
 
 # ══════════════════════════════════════════════════════════
 #  AYARLAR
@@ -600,14 +717,19 @@ async def settings_domain(request: Request, session=Depends(require_login),
         cfg["panel_domain"] = domain
         save_settings(cfg)
     except Exception as e:
+        log_action(request, "settings.domain", domain, str(e), status="error")
         return RedirectResponse(f"/settings?err=Nginx+hatası:+{str(e)[:120]}", status_code=302)
+    log_action(request, "settings.domain", domain,
+               f"eski: {old_domain}" if old_domain and old_domain != domain else "")
     if get_ssl:
         try:
             certbot_issue(domain)
         except RuntimeError as ce:
+            log_action(request, "ssl.issue", domain, str(ce), status="error")
             return RedirectResponse(
                 f"/settings?msg=Domain+ayarlandı+(SSL+hatası:+{str(ce)[:100]})",
                 status_code=302)
+        log_action(request, "ssl.issue", domain, "panel domaini")
         return RedirectResponse(f"/settings?msg=Panel+domain+ayarlandı+ve+SSL+alındı+(https://{domain})", status_code=302)
     return RedirectResponse(f"/settings?msg=Panel+domain+ayarlandı+(http://{domain})", status_code=302)
 
@@ -618,6 +740,8 @@ async def settings_domain_remove(request: Request, session=Depends(require_login
     if domain:
         remove_nginx_panel_domain(domain)
     save_settings(cfg)
+    if domain:
+        log_action(request, "settings.domain_remove", domain)
     return RedirectResponse("/settings?msg=Panel+domain+ayarı+kaldırıldı", status_code=302)
 
 # ══════════════════════════════════════════════════════════
