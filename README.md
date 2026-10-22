@@ -11,6 +11,7 @@ A web control panel for managing Linux users, per-user rootless Docker environme
 - Per-user rootless Docker setup, project directories, and a sample Compose file.
 - Assign a block of 1,000 ports to each user and validate domain targets against that block.
 - Route domains to local application ports through Nginx.
+- View and edit the server's Nginx configuration files on the Nginx page. Saving runs `nginx -t` and reloads only if it passes; otherwise the file is restored automatically. Each successful save keeps a backup in `/var/backups/vps-panel-nginx` (latest 20 per file).
 - Request and renew Let's Encrypt certificates using Certbot.
 - Configure a dedicated panel domain and HTTPS from the settings page.
 - Activity log of logins (including failed attempts), user, domain, SSL, and settings changes, with filters on the Logs page and a recent-activity card on the dashboard. The latest 10,000 entries are kept in `panel.db`.
@@ -73,8 +74,7 @@ Set `PANEL_EMAIL` to a real address before requesting certificates. Generated cr
 ### Current installation caveats
 
 - The repository ships only a schema template, `panel/panel.db.example`. Setup copies it to `/opt/vps-panel/panel.db` only when that file does not exist; an existing database is never touched, so re-running setup or updating cannot overwrite live data. Environment variables create an admin only when that username does not already exist; they do not reset existing passwords, so re-running setup on an existing installation prints a new password that does not apply.
-- The installer writes the Nginx upstream as `${PANEL_PORT}0`, but starts Uvicorn on `PANEL_PORT + 10000`. With defaults these are `87650` and `18765`. Before installation, correct the `proxy_pass` line in `setup.sh` to use `http://127.0.0.1:$((PANEL_PORT + 10000))`. Otherwise Nginx validation or panel access can fail.
-- On a retry, if Nginx reports that `sites-enabled/vps-users` is a directory, check that `/etc/nginx/nginx.conf` includes `/etc/nginx/sites-enabled/*.conf` and `/etc/nginx/sites-enabled/vps-users/*.conf`. Setup currently adjusts these includes after its first Nginx validation.
+- Setup installs a catch-all default server in `/etc/nginx/conf.d/00-default.conf`: requests for unknown hosts or the bare IP on ports 80/443 are dropped instead of being served by whichever vhost sorts first. Open the panel on `https://SERVER_IP:8765`; port 80 on the bare IP no longer redirects.
 
 After installation, open `https://SERVER_IP:8765` (or your configured port). The initial certificate is self-signed, so browsers display a certificate warning. A panel domain with a Let's Encrypt certificate can be configured under **Ayarlar** (Settings).
 
@@ -93,6 +93,8 @@ After installation, open `https://SERVER_IP:8765` (or your configured port). The
    ```
 
 5. Point the domain's DNS to the server. Use **Domainler** (Domains) to add more domains or request SSL. Request SSL separately for the main domain after creating the user.
+
+The **Nginx** page lists `nginx.conf`, `conf.d/*.conf`, `sites-available/*`, and the per-user domain files. Pick a file, edit it, and press **Kaydet & Doğrula** (or Ctrl/⌘+S). Files that are not linked into `sites-enabled` are marked inactive; `nginx -t` does not read them, so their syntax is not validated. The panel regenerates a domain's file when that domain is added (or the panel domain is set again), which overwrites manual edits to that file.
 
 Each user receives `~/projects`, `~/docker`, `~/data`, and `~/.ssh`. To use the generated Compose example, create some web content first:
 

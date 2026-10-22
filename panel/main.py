@@ -1,10 +1,11 @@
 """
 VPS Panel — Ana Uygulama (FastAPI)
 """
-import os, secrets, subprocess, json, sqlite3, bcrypt, psutil, re, shlex
-from datetime import datetime
+import os, secrets, subprocess, json, sqlite3, bcrypt, psutil, re, shlex, shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request, Form, Depends, Response, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -133,7 +134,7 @@ def run(cmd: list[str], check=True) -> tuple[int, str, str]:
 LOG_KEEP      = 10000   # en son bu kadar kayıt tutulur
 LOG_PAGE_SIZE = 50
 LOG_CATEGORIES = {"auth": "Oturum", "user": "Kullanıcı", "domain": "Domain",
-                  "ssl": "SSL", "settings": "Ayarlar"}
+                  "ssl": "SSL", "nginx": "Nginx", "settings": "Ayarlar"}
 ACTION_LABELS = {
     "auth.login":            "Giriş",
     "auth.login_failed":     "Başarısız giriş",
@@ -145,6 +146,8 @@ ACTION_LABELS = {
     "domain.delete":         "Domain silme",
     "ssl.issue":             "SSL sertifikası alma",
     "ssl.renew":             "SSL yenileme",
+    "nginx.save":            "Nginx config kaydetme",
+    "nginx.reload":          "Nginx reload",
     "settings.domain":       "Panel domain ayarı",
     "settings.domain_remove": "Panel domain kaldırma",
 }
@@ -620,6 +623,202 @@ async def logs_page(request: Request, session=Depends(require_login),
         "entries": entries, "total": total, "page": page, "pages": pages,
         "category": category, "status": status, "categories": LOG_CATEGORIES,
     })
+
+# ══════════════════════════════════════════════════════════
+#  NGINX CONFIG EDİTÖRÜ
+# ══════════════════════════════════════════════════════════
+NGINX_ROOT        = Path('/etc/nginx')
+NGINX_BACKUP_DIR  = Path('/var/backups/vps-panel-nginx')
+NGINX_BACKUP_KEEP = 20           # dosya başına tutulan yedek sayısı
+NGINX_MAX_BYTES   = 512 * 1024   # düzenlenebilir en büyük dosya
+
+def nginx_enabled_targets() -> set:
+    """sites-enabled (ve vps-users) altındaki symlink'lerin hedefleri."""
+    targets = set()
+    for d in (NGINX_ROOT / "sites-enabled", NGINX_ROOT / "sites-enabled" / "vps-users"):
+        if d.is_dir():
+            targets.update(p.resolve() for p in d.iterdir() if p.is_symlink())
+    return targets
+
+def nginx_files() -> list[dict]:
+    """Düzenlenebilir config dosyaları. Okuma/yazma yalnızca bu listedeki anahtarlarla
+    yapılır; istemciden gelen yol hiçbir zaman doğrudan dosya yolu olarak kullanılmaz."""
+    enabled = nginx_enabled_targets()
+    found = []
+
+    def add(group: str, path: Path, is_site: bool):
+        if (path.name.startswith(".") or path.is_symlink() or not path.is_file()
+                or path.stat().st_size > NGINX_MAX_BYTES):
+            return
+        found.append({
+            "key":     path.relative_to(NGINX_ROOT).as_posix(),
+            "name":    path.name,
+            "group":   group,
+            "enabled": (path.resolve() in enabled) if is_site else None,
+        })
+
+    add("Ana yapılandırma", NGINX_ROOT / "nginx.conf", False)
+    for group, d, pattern, is_site in (
+        ("conf.d",               NGINX_ROOT / "conf.d",                        "*.conf", False),
+        ("Siteler",              NGINX_ROOT / "sites-available",               "*",      True),
+        ("Kullanıcı domainleri", NGINX_ROOT / "sites-available" / "vps-users", "*",      True),
+    ):
+        if d.is_dir():
+            for p in sorted(d.glob(pattern)):
+                add(group, p, is_site)
+    return found
+
+def nginx_find(key: str) -> Optional[dict]:
+    return next((f for f in nginx_files() if f["key"] == key), None)
+
+def nginx_write(path: Path, content: str):
+    """Atomik yaz (aynı dizinde geçici dosya + rename); mevcut izinleri korur.
+    Geçici ad '.' ile başlar ve '.conf' ile bitmez, bu yüzden nginx include'ları onu yakalamaz."""
+    tmp = path.with_name(f".{path.name}.vps-tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+def nginx_backup_prefix(key: str) -> str:
+    return key.replace("/", "__")
+
+def nginx_backups(key: str) -> list[str]:
+    """Dosyanın yedek adları, en yeniden eskiye."""
+    if not NGINX_BACKUP_DIR.is_dir():
+        return []
+    pat = re.compile(rf"^{re.escape(nginx_backup_prefix(key))}\.\d{{8}}-\d{{6}}\.bak$")
+    return sorted((p.name for p in NGINX_BACKUP_DIR.iterdir() if pat.match(p.name)), reverse=True)
+
+def nginx_backup(key: str, content: str) -> str:
+    NGINX_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(NGINX_BACKUP_DIR, 0o700)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    name = f"{nginx_backup_prefix(key)}.{stamp}.bak"
+    (NGINX_BACKUP_DIR / name).write_text(content, encoding="utf-8")
+    for old in nginx_backups(key)[NGINX_BACKUP_KEEP:]:
+        (NGINX_BACKUP_DIR / old).unlink(missing_ok=True)
+    return name
+
+def nginx_apply(key: str, content: str) -> tuple[bool, str, str]:
+    """İçeriği yaz → nginx -t → reload. nginx -t ya da reload başarısız olursa eski içerik
+    geri yazılır. Dönüş: (başarılı, nginx çıktısı, yedek adı)."""
+    path = NGINX_ROOT / key
+    old = path.read_text(encoding="utf-8")
+    nginx_write(path, content)
+    reload_failed = False
+    try:
+        rc, out, err = run(["nginx", "-t"], check=False)
+        output = err or out
+        if rc == 0:
+            rc, out, err = run(["systemctl", "reload", "nginx"], check=False)
+            if rc != 0:
+                reload_failed, output = True, f"Reload başarısız: {err or out}"
+    except Exception:
+        nginx_write(path, old)
+        raise
+    if rc != 0:
+        nginx_write(path, old)
+        if reload_failed:
+            run(["systemctl", "reload", "nginx"], check=False)   # çalışan eski haline dön
+        return False, output, ""
+    return True, output, nginx_backup(key, old)
+
+def nginx_render(request: Request, session: dict, key: str = "", content: Optional[str] = None,
+                 backup: str = "", msg: str = "", err: str = "", output: str = ""):
+    files = nginx_files()
+    current = next((f for f in files if f["key"] == key), None)
+    if key and not current and not err:
+        err = "Dosya bulunamadı"
+    saved, loaded_backup, backups = None, "", []
+    if current:
+        try:
+            saved = (NGINX_ROOT / key).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            saved = None
+            err = err or f"Dosya okunamadı: {e}"
+        names = nginx_backups(key)
+        backups = [{
+            "name": n,
+            "iso":  datetime.strptime(n[-19:-4], "%Y%m%d-%H%M%S").strftime("%Y-%m-%dT%H:%M:%SZ"),
+        } for n in names]
+        if content is None and saved is not None:
+            content = saved
+            if backup in names:
+                content = (NGINX_BACKUP_DIR / backup).read_text(encoding="utf-8")
+                loaded_backup = backup
+    groups: dict[str, list] = {}
+    for f in files:
+        groups.setdefault(f["group"], []).append(f)
+    _, nginx_state, _ = run(["systemctl", "is-active", "nginx"], check=False)
+    return templates.TemplateResponse(request, "nginx.html", {
+        "admin": session["admin"],
+        "groups": groups, "current": current, "content": content, "saved": saved,
+        "backups": backups, "loaded_backup": loaded_backup,
+        "nginx_state": nginx_state or "unknown",
+        "max_kb": NGINX_MAX_BYTES // 1024,
+        "msg": msg, "err": err, "output": output,
+    })
+
+def nginx_redirect(key: str, **params) -> RedirectResponse:
+    q = {"file": key, **{k: v for k, v in params.items() if v}}
+    return RedirectResponse("/nginx?" + urlencode(q), status_code=302)
+
+@app.get("/nginx", response_class=HTMLResponse)
+async def nginx_page(request: Request, session=Depends(require_login),
+                     file: str = "", backup: str = "", msg: str = "", err: str = ""):
+    return nginx_render(request, session, file, backup=backup, msg=msg, err=err)
+
+@app.post("/nginx/save", response_class=HTMLResponse)
+async def nginx_save(request: Request, session=Depends(require_login),
+                     file: str = Form(...), content: str = Form("")):
+    f = nginx_find(file)
+    if not f:
+        return nginx_redirect("", err="Dosya bulunamadı")
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    if not content.endswith("\n"):
+        content += "\n"
+    if "\x00" in content or len(content.encode("utf-8")) > NGINX_MAX_BYTES:
+        return nginx_render(request, session, file, content=content,
+                            err=f"İçerik geçersiz (NUL karakter içeriyor ya da {NGINX_MAX_BYTES // 1024} KB'tan büyük)")
+    try:
+        old = (NGINX_ROOT / file).read_text(encoding="utf-8")
+        if content == old:
+            return nginx_redirect(file, msg="Değişiklik yok")
+        ok, output, backup_name = nginx_apply(file, content)
+    except Exception as e:
+        log_action(request, "nginx.save", file, str(e), status="error")
+        return nginx_render(request, session, file, content=content, err=f"Kaydedilemedi: {e}")
+    if not ok:
+        log_action(request, "nginx.save", file, output, status="error")
+        return nginx_render(request, session, file, content=content, output=output,
+                            err="Kaydedilmedi: nginx -t doğrulaması başarısız. Dosya önceki haline döndürüldü; "
+                                "düzenlemeniz aşağıda korunuyor.")
+    log_action(request, "nginx.save", file,
+               f"{len(old.splitlines())} → {len(content.splitlines())} satır, yedek {backup_name}")
+    return nginx_redirect(file, msg="Kaydedildi: nginx -t geçti ve nginx reload edildi")
+
+@app.post("/nginx/test", response_class=HTMLResponse)
+async def nginx_test(request: Request, session=Depends(require_login), file: str = Form("")):
+    rc, out, err = run(["nginx", "-t"], check=False)
+    if rc == 0:
+        return nginx_render(request, session, file, msg="Yapılandırma geçerli", output=err or out)
+    return nginx_render(request, session, file, err="Yapılandırma hatalı", output=err or out)
+
+@app.post("/nginx/reload", response_class=HTMLResponse)
+async def nginx_reload_route(request: Request, session=Depends(require_login), file: str = Form("")):
+    rc, out, err = run(["nginx", "-t"], check=False)
+    output = err or out
+    if rc == 0:
+        rc, out, err = run(["systemctl", "reload", "nginx"], check=False)
+        output = err or out or output
+    if rc != 0:
+        log_action(request, "nginx.reload", status="error", detail=output)
+        return nginx_render(request, session, file, err="Reload yapılamadı", output=output)
+    log_action(request, "nginx.reload")
+    return nginx_render(request, session, file, msg="Nginx reload edildi", output=output)
 
 # ══════════════════════════════════════════════════════════
 #  AYARLAR

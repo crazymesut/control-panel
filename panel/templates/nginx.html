@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Nginx — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-start justify-between gap-4 flex-wrap">
+  <div>
+    <h1 class="text-xl font-bold text-white">Nginx Yapılandırması</h1>
+    <p class="text-gray-500 text-sm mt-0.5">
+      Sunucudaki config dosyalarını görüntüle ve düzenle ·
+      <span class="px-2 py-0.5 rounded-full text-xs align-middle
+        {% if nginx_state == 'active' %}bg-emerald-900/60 text-emerald-400{% else %}bg-red-900/60 text-red-400{% endif %}">
+        nginx: {{ nginx_state }}
+      </span>
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <form method="post" action="/nginx/test">
+      <input type="hidden" name="file" value="{{ current.key if current else '' }}">
+      <button type="submit" class="btn-secondary">Yapılandırmayı Test Et</button>
+    </form>
+    <form method="post" action="/nginx/reload"
+      onsubmit="return confirm('Nginx reload edilecek (önce nginx -t çalıştırılır). Devam?')">
+      <input type="hidden" name="file" value="{{ current.key if current else '' }}">
+      <button type="submit" class="btn-secondary">Test Et &amp; Reload</button>
+    </form>
+  </div>
+</div>
+
+{% if msg %}
+<div class="mb-4 px-4 py-3 bg-emerald-900/40 border border-emerald-700/50 rounded-lg text-sm text-emerald-300">✓ {{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="mb-4 px-4 py-3 bg-red-900/40 border border-red-700/50 rounded-lg text-sm text-red-300">⚠ {{ err }}</div>
+{% endif %}
+{% if output %}
+<pre class="mb-4 px-4 py-3 bg-gray-900 border border-gray-800 rounded-lg text-xs text-gray-300 font-mono whitespace-pre-wrap break-all">{{ output }}</pre>
+{% endif %}
+
+<div class="flex gap-6 items-start">
+
+  <!-- Dosya Listesi -->
+  <div class="w-64 shrink-0 bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-4">
+    {% for group, items in groups.items() %}
+    <div>
+      <div class="px-2 mb-1 text-xs uppercase tracking-wide text-gray-600">{{ group }}</div>
+      {% for f in items %}
+      <a href="/nginx?file={{ f.key | urlencode }}" title="/etc/nginx/{{ f.key }}"
+        class="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-sm font-mono
+          {% if current and current.key == f.key %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span class="truncate">{{ f.name }}</span>
+        {% if f.enabled is not none %}
+        <span class="shrink-0 w-1.5 h-1.5 rounded-full {% if f.enabled %}bg-emerald-500{% else %}bg-gray-600{% endif %}"
+          title="{% if f.enabled %}Etkin (sites-enabled'a bağlı){% else %}Pasif (sites-enabled'a bağlı değil){% endif %}"></span>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="px-2 py-4 text-sm text-gray-600">Düzenlenebilir dosya bulunamadı.</div>
+    {% endfor %}
+  </div>
+
+  <!-- Editör -->
+  <div class="flex-1 min-w-0">
+    {% if current and content is not none %}
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div class="font-mono text-sm text-indigo-300 break-all">/etc/nginx/{{ current.key }}</div>
+        <div id="dirty-badge" class="hidden px-2 py-0.5 rounded-full text-xs bg-amber-900/60 text-amber-400">Kaydedilmemiş değişiklik</div>
+      </div>
+
+      {% if current.enabled is false %}
+      <div class="mb-3 px-3 py-2 bg-amber-900/30 border border-amber-700/40 rounded-lg text-xs text-amber-300">
+        Bu dosya <span class="font-mono">sites-enabled</span> altına bağlı değil. <span class="font-mono">nginx -t</span> onu
+        okumaz; yani kaydetme başarılı görünse bile içeriği doğrulanmış olmaz.
+      </div>
+      {% endif %}
+      {% if 'managed by Certbot' in content %}
+      <div class="mb-3 px-3 py-2 bg-gray-800/60 border border-gray-700/60 rounded-lg text-xs text-gray-400">
+        Bu dosyada <span class="font-mono">managed by Certbot</span> satırları var. Sertifika yollarını ve
+        <span class="font-mono">ssl_</span> / <span class="font-mono">include</span> satırlarını değiştirirseniz
+        yenileme bozulabilir.
+      </div>
+      {% endif %}
+      {% if loaded_backup %}
+      <div class="mb-3 px-3 py-2 bg-indigo-900/30 border border-indigo-700/40 rounded-lg text-xs text-indigo-300">
+        Yedek editöre yüklendi: <span class="font-mono">{{ loaded_backup }}</span>. Henüz kaydedilmedi;
+        <b>Kaydet</b>'e basarsanız doğrulamadan geçip uygulanır.
+      </div>
+      {% endif %}
+
+      <form id="nginx-form" method="post" action="/nginx/save">
+        <input type="hidden" name="file" value="{{ current.key }}">
+        <textarea id="nginx-content" name="content" aria-label="Nginx config içeriği"
+          spellcheck="false" autocomplete="off" wrap="off"
+          class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-100 font-mono
+                 leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          style="min-height:60vh; tab-size:4; white-space:pre; overflow:auto;">
+{{ content }}</textarea>
+        <div class="mt-3 flex items-center gap-3 flex-wrap">
+          <button type="submit" class="btn-primary">Kaydet &amp; Doğrula</button>
+          <a href="/nginx?file={{ current.key | urlencode }}" class="btn-secondary">Değişiklikleri at</a>
+          <span class="text-gray-600 text-xs">
+            Kayıtta önce <span class="font-mono">nginx -t</span> çalışır; hata varsa dosya otomatik eski haline döner.
+            Kaydet: Ctrl/⌘+S · en çok {{ max_kb }} KB
+          </span>
+        </div>
+      </form>
+    </div>
+
+    {% if backups %}
+    <div class="mt-4 bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-3">🗄 Yedekler <span class="text-gray-600 font-normal text-xs">(her başarılı kayıttan önceki hali)</span></h2>
+      <div class="flex flex-wrap gap-2">
+        {% for b in backups %}
+        <a href="/nginx?file={{ current.key | urlencode }}&backup={{ b.name | urlencode }}"
+          class="btn-secondary {% if loaded_backup == b.name %}ring-1 ring-indigo-500{% endif %}"
+          title="{{ b.name }}">
+          <time class="log-ts" datetime="{{ b.iso }}">{{ b.iso[:16] }}</time>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-10 text-center text-gray-600 text-sm">
+      Düzenlemek için soldan bir dosya seçin.
+    </div>
+    {% endif %}
+
+    <div class="mt-4 bg-gray-900/50 border border-gray-800 rounded-xl p-5">
+      <h3 class="text-sm font-semibold text-gray-300 mb-2">ℹ️ Nasıl Çalışır?</h3>
+      <p class="text-gray-500 text-xs leading-relaxed">
+        Kaydettiğinizde dosya yazılır, <span class="font-mono">nginx -t</span> ile doğrulanır ve geçerliyse nginx reload edilir.
+        Doğrulama ya da reload başarısız olursa dosya otomatik olarak önceki haline döner ve nginx çıktısı gösterilir.
+        Başarılı her kayıttan önceki hali <span class="font-mono">/var/backups/vps-panel-nginx</span> altına yedeklenir.
+        Panel, bir domain eklendiğinde ya da panel domaini yeniden ayarlandığında o domainin dosyasını yeniden üretir;
+        o dosyaya elle yaptığınız değişiklikler bu durumda ezilir.
+      </p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% include "_localtime.html" %}
+{% if current and content is not none %}
+<script>
+(() => {
+  const form = document.getElementById('nginx-form');
+  const ta = document.getElementById('nginx-content');
+  const badge = document.getElementById('dirty-badge');
+  // Karşılaştırma tabanı: diskteki içerik (hata sonrası ya da yedek yüklüyken editör farklı olabilir)
+  const initial = {{ saved | tojson }};
+  let saving = false;
+
+  const update = () => badge.classList.toggle('hidden', ta.value.replace(/\r\n/g, '\n') === initial);
+  ta.addEventListener('input', update);
+  update();
+
+  // Tab → 4 boşluk (odak kaybetmesin)
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      ta.setRangeText('    ', ta.selectionStart, ta.selectionEnd, 'end');
+      update();
+    }
+  });
+
+  // Ctrl/⌘+S → kaydet
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (!form.dataset.submitting) form.requestSubmit();
+    }
+  });
+
+  form.addEventListener('submit', () => { saving = true; });
+  window.addEventListener('beforeunload', e => {
+    if (!saving && ta.value.replace(/\r\n/g, '\n') !== initial) { e.preventDefault(); e.returnValue = ''; }
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

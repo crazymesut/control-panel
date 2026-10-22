@@ -10,6 +10,7 @@ Bir VPS üzerinde Linux kullanıcılarını, kullanıcı bazlı rootless Docker 
 - Linux kullanıcısı oluşturma, etkinleştirme, devre dışı bırakma ve silme.
 - Her kullanıcı için rootless Docker kurulumu, proje dizinleri ve örnek Compose dosyası.
 - Kullanıcı başına 1.000 portluk blok atama ve domain hedeflerini bu blokla doğrulama.
+- Nginx sayfasından sunucudaki Nginx config dosyalarını görüntüleme ve düzenleme. Kaydetme `nginx -t` çalıştırır; yalnızca geçerliyse reload edilir, aksi halde dosya otomatik olarak eski haline döner. Başarılı her kayıtta önceki hali `/var/backups/vps-panel-nginx` altında yedeklenir (dosya başına son 20).
 - Nginx üzerinden domainleri yerel uygulama portlarına yönlendirme.
 - Certbot ile Let's Encrypt sertifikası alma ve yenileme.
 - Ayarlar sayfasından panele özel domain ve HTTPS tanımlama.
@@ -73,8 +74,7 @@ Sertifika istemeden önce `PANEL_EMAIL` için gerçek bir adres belirtin. Oluşt
 ### Mevcut kurulumla ilgili notlar
 
 - Depoda yalnızca şema şablonu olan `panel/panel.db.example` bulunur. Kurulum bu dosyayı yalnızca `/opt/vps-panel/panel.db` yoksa oraya kopyalar; mevcut veritabanına asla dokunulmaz, bu nedenle kurulumu yeniden çalıştırmak veya güncelleme yapmak canlı verinin üzerine yazmaz. Ortam değişkenleri yalnızca aynı kullanıcı adı mevcut değilse yönetici oluşturur; mevcut şifreleri sıfırlamaz. Bu yüzden mevcut bir kurulumda `setup.sh`'i yeniden çalıştırınca gösterilen yeni şifre geçerli olmaz.
-- Kurulum betiği Nginx hedefini `${PANEL_PORT}0` olarak yazarken Uvicorn'u `PANEL_PORT + 10000` portunda başlatır. Varsayılan değerlerle bunlar `87650` ve `18765` olur. Kurulumdan önce `setup.sh` içindeki `proxy_pass` satırının hedefini `http://127.0.0.1:$((PANEL_PORT + 10000))` olarak düzeltin. Aksi durumda Nginx doğrulaması veya panele erişim başarısız olabilir.
-- Kurulumu tekrar çalıştırırken Nginx, `sites-enabled/vps-users` yolunun bir dizin olduğunu bildirirse `/etc/nginx/nginx.conf` içinde `/etc/nginx/sites-enabled/*.conf` ve `/etc/nginx/sites-enabled/vps-users/*.conf` include satırlarını kontrol edin. Betik bu düzenlemeleri şu anda ilk Nginx doğrulamasından sonra yapar.
+- Kurulum, `/etc/nginx/conf.d/00-default.conf` içine bir catch-all varsayılan server ekler: 80/443 portlarında tanınmayan host adı veya doğrudan IP ile gelen istekler, alfabetik olarak ilk gelen vhost'a düşmek yerine reddedilir. Paneli `https://SUNUCU_IP:8765` adresinden açın; IP üzerinden 80 portu artık yönlendirme yapmaz.
 
 Kurulumdan sonra `https://SUNUCU_IP:8765` adresini açın; farklı port belirlediyseniz onu kullanın. İlk sertifika kendinden imzalı olduğu için tarayıcı sertifika uyarısı gösterir. **Ayarlar** bölümünden panel domaini tanımlayıp Let's Encrypt sertifikası alabilirsiniz.
 
@@ -93,6 +93,8 @@ Kurulumdan sonra `https://SUNUCU_IP:8765` adresini açın; farklı port belirled
    ```
 
 5. Domainin DNS kayıtlarını sunucuya yönlendirin. **Domainler** bölümünden ek domain tanımlayabilir veya SSL alabilirsiniz. Kullanıcı oluşturulduktan sonra ana domain için SSL'yi ayrıca isteyin.
+
+**Nginx** sayfası `nginx.conf`, `conf.d/*.conf`, `sites-available/*` ve kullanıcı domain dosyalarını listeler. Bir dosya seçip düzenleyin ve **Kaydet & Doğrula**'ya (ya da Ctrl/⌘+S) basın. `sites-enabled` altına bağlı olmayan dosyalar pasif işaretlenir; `nginx -t` bunları okumadığı için sözdizimleri doğrulanmaz. Panel, bir domain eklendiğinde (ya da panel domaini yeniden ayarlandığında) o domainin dosyasını yeniden üretir; bu da dosyadaki elle yapılmış değişiklikleri ezer.
 
 Her kullanıcı için `~/projects`, `~/docker`, `~/data` ve `~/.ssh` dizinleri hazırlanır. Oluşturulan Compose örneğini kullanmak için önce web içeriğini oluşturun:
 

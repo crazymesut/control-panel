@@ -125,14 +125,39 @@ if [[ ! -f "$SSL_DIR/panel.crt" ]]; then
     log "Self-signed SSL sertifikası oluşturuldu"
 fi
 
-# Nginx ana config
-cat > /etc/nginx/sites-available/vps-panel << NGINXCONF
+# Kullanıcı domain config dizinleri ve nginx.conf include'ları
+# (nginx -t'den ÖNCE yapılmalı: sites-enabled/vps-users dizini '*' include'una takılır)
+mkdir -p /etc/nginx/sites-available/vps-users
+mkdir -p /etc/nginx/sites-enabled/vps-users
+
+if ! grep -q "vps-users" /etc/nginx/nginx.conf; then
+    # Wildcard'ı .conf uzantılı dosyalarla sınırla (dizinleri dışarıda bırak)
+    sed -i 's|include /etc/nginx/sites-enabled/\*;|include /etc/nginx/sites-enabled/*.conf;|' \
+        /etc/nginx/nginx.conf
+    # Kullanıcı domain config'leri için ayrı include ekle
+    sed -i '/include \/etc\/nginx\/sites-enabled\/\*\.conf;/a\\tinclude /etc/nginx/sites-enabled/vps-users/*.conf;' \
+        /etc/nginx/nginx.conf
+fi
+
+# Catch-all: tanınmayan Host/IP istekleri panele ya da başka bir vhost'a düşmesin.
+# Aksi halde alfabetik olarak ilk gelen vhost implicit default olur ve panel,
+# sertifika uyuşmazlığıyla herhangi bir host adı altında sunulur.
+cat > /etc/nginx/conf.d/00-default.conf << 'NGINXCONF'
 server {
-    listen 80;
+    listen 80 default_server;
     server_name _;
-    return 301 https://\$host\$request_uri;
+    return 444;
 }
 
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+NGINXCONF
+
+# Nginx ana config
+cat > /etc/nginx/sites-available/vps-panel << NGINXCONF
 server {
     listen              ${PANEL_PORT} ssl;
     server_name         _;
@@ -145,7 +170,7 @@ server {
     client_max_body_size 50M;
 
     location / {
-        proxy_pass         http://127.0.0.1:${PANEL_PORT}0;
+        proxy_pass         http://127.0.0.1:$((PANEL_PORT + 10000));
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
@@ -165,20 +190,6 @@ log "Nginx yapılandırıldı"
 # /home dizinini kapat — kullanıcılar birbirinin klasörünü göremez
 chmod 711 /home
 log "/home dizin izni 711 olarak ayarlandı"
-
-# Kullanıcı domain config dizini
-mkdir -p /etc/nginx/sites-available/vps-users
-mkdir -p /etc/nginx/sites-enabled/vps-users
-
-# nginx.conf içine include ekle
-if ! grep -q "vps-users" /etc/nginx/nginx.conf; then
-    # Wildcard'ı .conf uzantılı dosyalarla sınırla (dizinleri dışarıda bırak)
-    sed -i 's|include /etc/nginx/sites-enabled/\*;|include /etc/nginx/sites-enabled/*.conf;|' \
-        /etc/nginx/nginx.conf
-    # Kullanıcı domain config'leri için ayrı include ekle
-    sed -i '/include \/etc\/nginx\/sites-enabled\/\*\.conf;/a\\tinclude /etc/nginx/sites-enabled/vps-users/*.conf;' \
-        /etc/nginx/nginx.conf
-fi
 
 # ============================================================
 step "6/7 — Panel Kurulumu"
