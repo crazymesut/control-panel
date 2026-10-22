@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Kullanıcılar — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-center justify-between">
+  <div>
+    <h1 class="text-xl font-bold text-white">Kullanıcılar</h1>
+    <p class="text-gray-500 text-sm mt-0.5">SSH + Docker Rootless kullanıcıları</p>
+  </div>
+  <button onclick="document.getElementById('modal-add').classList.remove('hidden')"
+    class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+    + Kullanıcı Ekle
+  </button>
+</div>
+
+<!-- Bildirimler -->
+{% if msg %}
+<div class="mb-4 px-4 py-3 bg-emerald-900/40 border border-emerald-700/50 rounded-lg text-sm text-emerald-300">✓ {{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="mb-4 px-4 py-3 bg-red-900/40 border border-red-700/50 rounded-lg text-sm text-red-300">⚠ {{ err }}</div>
+{% endif %}
+
+<!-- Kullanıcı Tablosu -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-500 text-xs uppercase tracking-wide border-b border-gray-800">
+        <th class="px-5 py-3 text-left">Kullanıcı Adı</th>
+        <th class="px-5 py-3 text-left">Ana Domain</th>
+        <th class="px-5 py-3 text-left">Port Bloğu</th>
+        <th class="px-5 py-3 text-left">Durum</th>
+        <th class="px-5 py-3 text-left">Oluşturulma</th>
+        <th class="px-5 py-3 text-right">İşlemler</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800/50">
+      {% for u in users %}
+      <tr class="hover:bg-gray-800/30 transition-colors">
+        <td class="px-5 py-3">
+          <div class="font-mono text-indigo-300 font-medium">{{ u.username }}</div>
+          <div class="text-gray-600 text-xs font-mono">/home/{{ u.username }}</div>
+        </td>
+        <td class="px-5 py-3">
+          {% if u.main_domain %}
+          <a href="http://{{ u.main_domain }}" target="_blank"
+            class="font-mono text-emerald-400 text-xs hover:text-emerald-300 transition-colors">
+            {{ u.main_domain }} ↗
+          </a>
+          {% else %}
+          <span class="text-gray-700 text-xs">—</span>
+          {% endif %}
+        </td>
+        <td class="px-5 py-3 font-mono text-gray-300 text-xs">
+          <span class="text-amber-300">{{ u.port_prefix }}</span>×
+          {{ u.port_prefix * 1000 }} – {{ u.port_prefix * 1000 + 999 }}
+        </td>
+        <td class="px-5 py-3">
+          <span class="px-2.5 py-1 rounded-full text-xs font-medium
+            {% if u.status == 'active' %}bg-emerald-900/60 text-emerald-400{% else %}bg-gray-800 text-gray-500{% endif %}">
+            {% if u.status == 'active' %}● Aktif{% else %}○ Pasif{% endif %}
+          </span>
+        </td>
+        <td class="px-5 py-3 text-gray-500 text-xs">{{ u.created_at[:16] }}</td>
+        <td class="px-5 py-3 text-right">
+          <div class="flex items-center justify-end gap-2">
+            <!-- Containerları Gör -->
+            <button onclick="showContainers('{{ u.username }}')"
+              class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+              🐳
+            </button>
+            <!-- Aktif/Pasif -->
+            <form method="post" action="/users/toggle" class="inline">
+              <input type="hidden" name="user_id" value="{{ u.id }}">
+              <button type="submit"
+                class="{% if u.status == 'active' %}bg-amber-700 hover:bg-amber-600{% else %}bg-emerald-700 hover:bg-emerald-600{% endif %} text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+                {% if u.status == 'active' %}Durdur{% else %}Başlat{% endif %}
+              </button>
+            </form>
+            <!-- Sil -->
+            <form method="post" action="/users/delete" class="inline"
+              onsubmit="return confirm('{{ u.username }} kullanıcısını ve tüm verilerini silmek istediğinizden emin misiniz?')">
+              <input type="hidden" name="user_id" value="{{ u.id }}">
+              <button type="submit"
+                class="bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+                Sil
+              </button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="px-5 py-10 text-center text-gray-600">
+          Henüz kullanıcı eklenmedi.<br>
+          <span class="text-gray-700 text-xs">Sağ üstteki butona tıklayarak ekleyebilirsiniz.</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- PORT SİSTEMİ AÇIKLAMA -->
+<div class="mt-6 bg-gray-900/50 border border-gray-800 rounded-xl p-5">
+  <h3 class="text-sm font-semibold text-gray-300 mb-2">🔢 Port Sistemi</h3>
+  <p class="text-gray-500 text-xs leading-relaxed">
+    Her kullanıcı benzersiz bir port bloğu alır. Örneğin prefix <span class="text-amber-300 font-mono">10</span> → portlar <span class="font-mono text-gray-300">10000–10999</span>.
+    Kullanıcı Docker compose'larında bu portları kullanmalıdır.
+    Nginx bir domain ile belirli bir porta yönlendirir (örn: web → <span class="font-mono text-gray-300">10080</span>).
+  </p>
+</div>
+
+<!-- MODAL: Kullanıcı Ekle -->
+<div id="modal-add" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+  <div class="bg-gray-900 border border-gray-700 rounded-2xl p-7 w-full max-w-md shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-lg font-bold text-white">Yeni Kullanıcı</h2>
+      <button onclick="document.getElementById('modal-add').classList.add('hidden')"
+        class="text-gray-600 hover:text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <form method="post" action="/users/create" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">Kullanıcı Adı</label>
+        <input name="username" type="text" required
+          pattern="[a-z][a-z0-9_]{2,30}"
+          title="Küçük harf ile başlayın, 3-31 karakter, sadece a-z 0-9 _"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          placeholder="ornek_kullanici">
+        <p class="text-gray-600 text-xs mt-1">Küçük harf, 3-31 karakter (SSH kullanıcı adı)</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">
+          Ana Domain <span class="text-red-400">*</span>
+        </label>
+        <input name="main_domain" type="text" required
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+          placeholder="kullanici.siteadi.com">
+        <p class="text-gray-600 text-xs mt-1">Kullanıcının ana web adresi — nginx otomatik kurulur</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">SSH Şifresi</label>
+        <input name="password" type="password" required minlength="8"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          placeholder="En az 8 karakter">
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit"
+          class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+          Oluştur
+        </button>
+        <button type="button" onclick="document.getElementById('modal-add').classList.add('hidden')"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-lg text-sm transition-colors">
+          İptal
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- MODAL: Containerlar -->
+<div id="modal-containers" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+  <div class="bg-gray-900 border border-gray-700 rounded-2xl p-7 w-full max-w-lg shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-lg font-bold text-white">🐳 Containerlar: <span id="container-username" class="text-indigo-400"></span></h2>
+      <button onclick="document.getElementById('modal-containers').classList.add('hidden')"
+        class="text-gray-600 hover:text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <div id="container-list" class="text-sm text-gray-400">Yükleniyor...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function showContainers(username) {
+  document.getElementById('container-username').textContent = username;
+  document.getElementById('container-list').textContent = 'Yükleniyor...';
+  document.getElementById('modal-containers').classList.remove('hidden');
+  try {
+    const r = await fetch(`/api/user/${username}/containers`);
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('container-list').textContent = '⚠ ' + d.error;
+      return;
+    }
+    if (!d.containers.length) {
+      document.getElementById('container-list').innerHTML =
+        '<div class="text-gray-600 text-center py-4">Çalışan container yok</div>';
+      return;
+    }
+    let html = '<div class="space-y-2">';
+    for (const c of d.containers) {
+      html += `<div class="bg-gray-800 rounded-lg px-4 py-3">
+        <div class="font-mono text-indigo-300">${c.name}</div>
+        <div class="text-xs text-gray-500 mt-1">${c.status}</div>
+        ${c.ports ? `<div class="text-xs text-gray-600 mt-0.5 font-mono">${c.ports}</div>` : ''}
+      </div>`;
+    }
+    html += '</div>';
+    document.getElementById('container-list').innerHTML = html;
+  } catch(e) {
+    document.getElementById('container-list').textContent = '⚠ Bağlantı hatası';
+  }
+}
+</script>
+{% endblock %}

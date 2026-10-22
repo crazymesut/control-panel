@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Ayarlar — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-bold text-white">Sunucu Ayarları</h1>
+  <p class="text-gray-500 text-sm mt-0.5">Panel erişim domain'i ve genel yapılandırma</p>
+</div>
+
+{% if msg %}
+<div class="mb-4 px-4 py-3 bg-emerald-900/40 border border-emerald-700/50 rounded-lg text-sm text-emerald-300">✓ {{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="mb-4 px-4 py-3 bg-red-900/40 border border-red-700/50 rounded-lg text-sm text-red-300">⚠ {{ err }}</div>
+{% endif %}
+
+<!-- Panel Domain -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+  <h2 class="text-sm font-semibold text-gray-300 mb-4">🌐 Panel Domain Ayarı</h2>
+
+  <div class="mb-4 p-4 bg-gray-800/60 rounded-lg">
+    <div class="text-xs text-gray-500 mb-1">Mevcut Erişim</div>
+    <div class="font-mono text-indigo-300 text-sm">https://{{ server_ip }}:{{ panel_port }}</div>
+    {% if panel_domain %}
+    <div class="mt-2 text-xs text-gray-500">Panel Domain'i</div>
+    <div class="flex items-center gap-2 mt-0.5">
+      <span class="font-mono text-emerald-400 text-sm">https://{{ panel_domain }}</span>
+      {% if panel_domain_ssl %}
+      <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-900/60 text-emerald-400">🔒 SSL</span>
+      {% else %}
+      <span class="px-2 py-0.5 rounded-full text-xs bg-amber-900/60 text-amber-400">HTTP</span>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/settings/domain" class="space-y-4">
+    <div>
+      <label class="block text-xs font-medium text-gray-400 mb-1.5">Panel Domain'i</label>
+      <input name="domain" type="text"
+        value="{{ panel_domain or '' }}"
+        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+               focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+        placeholder="panel.sirketim.com">
+      <p class="text-gray-600 text-xs mt-1">
+        DNS A kaydı bu sunucuya yönlendirilmiş olmalıdır ({{ server_ip }})
+      </p>
+    </div>
+    <div class="flex items-center gap-3 py-1">
+      <input type="checkbox" name="get_ssl" id="chk-ssl" value="true"
+        {% if panel_domain and not panel_domain_ssl %}checked{% endif %}
+        class="w-4 h-4 rounded bg-gray-800 border-gray-600 accent-indigo-500">
+      <label for="chk-ssl" class="text-sm text-gray-300">
+        SSL Sertifikası Al (Let's Encrypt)
+        <span class="text-gray-600 text-xs block">DNS yönlendirmesi tamamlanmış olmalıdır</span>
+      </label>
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">
+      Kaydet & Nginx'i Güncelle
+    </button>
+  </form>
+
+  {% if panel_domain %}
+  <form method="post" action="/settings/domain-remove" class="mt-3"
+    onsubmit="return confirm('Panel domain ayarı kaldırılacak. IP:Port ile erişim devam eder. Devam?')">
+    <button type="submit"
+      class="text-xs text-gray-600 hover:text-red-400 transition-colors">
+      Domain ayarını kaldır
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<!-- Bilgi Kartı -->
+<div class="bg-gray-900/50 border border-gray-800 rounded-xl p-5">
+  <h3 class="text-sm font-semibold text-gray-300 mb-2">ℹ️ Nasıl Çalışır?</h3>
+  <p class="text-gray-500 text-xs leading-relaxed">
+    Panel domain'i ayarlandığında Nginx, o domain için port 80/443'te reverse proxy oluşturur.
+    Böylece panele IP:port yerine domain üzerinden HTTPS ile erişilir.
+    Eski IP:port erişimi de çalışmaya devam eder.
+  </p>
+</div>
+{% endblock %}

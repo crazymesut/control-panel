@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-bold text-white">Dashboard</h1>
+  <p class="text-gray-500 text-sm mt-0.5">Sistem durumu ve genel bakış</p>
+</div>
+
+<!-- Sistem İstatistikleri -->
+<div class="grid grid-cols-3 gap-4 mb-8">
+  <!-- CPU -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-gray-400 text-sm font-medium">CPU</span>
+      <span id="cpu-val" class="text-xl font-bold text-white">{{ cpu }}%</span>
+    </div>
+    <div class="w-full bg-gray-800 rounded-full h-1.5">
+      <div id="cpu-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" style="width: {{ cpu }}%"></div>
+    </div>
+  </div>
+  <!-- RAM -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-gray-400 text-sm font-medium">RAM</span>
+      <span class="text-xl font-bold text-white">{{ mem_pct }}%</span>
+    </div>
+    <div class="w-full bg-gray-800 rounded-full h-1.5 mb-1">
+      <div class="bg-emerald-500 h-1.5 rounded-full" style="width: {{ mem_pct }}%"></div>
+    </div>
+    <div class="text-xs text-gray-600">{{ mem_used }} / {{ mem_total }} GB</div>
+  </div>
+  <!-- Disk -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-gray-400 text-sm font-medium">Disk</span>
+      <span class="text-xl font-bold text-white">{{ disk_pct }}%</span>
+    </div>
+    <div class="w-full bg-gray-800 rounded-full h-1.5 mb-1">
+      <div class="bg-amber-500 h-1.5 rounded-full" style="width: {{ disk_pct }}%"></div>
+    </div>
+    <div class="text-xs text-gray-600">{{ disk_used }} / {{ disk_total }} GB</div>
+  </div>
+</div>
+
+<!-- Özet Kartları -->
+<div class="grid grid-cols-2 gap-4 mb-8">
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center gap-4">
+    <div class="w-12 h-12 bg-indigo-600/20 rounded-xl flex items-center justify-center text-2xl">👤</div>
+    <div>
+      <div class="text-3xl font-bold text-white">{{ users | length }}</div>
+      <div class="text-gray-400 text-sm">Kullanıcı</div>
+    </div>
+    <a href="/users" class="ml-auto text-indigo-400 hover:text-indigo-300 text-sm">Yönet →</a>
+  </div>
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center gap-4">
+    <div class="w-12 h-12 bg-emerald-600/20 rounded-xl flex items-center justify-center text-2xl">🌐</div>
+    <div>
+      <div class="text-3xl font-bold text-white">{{ domains | length }}</div>
+      <div class="text-gray-400 text-sm">Domain</div>
+    </div>
+    <a href="/domains" class="ml-auto text-emerald-400 hover:text-emerald-300 text-sm">Yönet →</a>
+  </div>
+</div>
+
+<!-- Son Kullanıcılar -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <div class="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
+    <h2 class="font-semibold text-white">Son Kullanıcılar</h2>
+    <a href="/users" class="text-indigo-400 hover:text-indigo-300 text-sm">Tümünü gör →</a>
+  </div>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-500 text-xs uppercase tracking-wide border-b border-gray-800/50">
+        <th class="px-5 py-3 text-left">Kullanıcı</th>
+        <th class="px-5 py-3 text-left">Port Bloğu</th>
+        <th class="px-5 py-3 text-left">Durum</th>
+        <th class="px-5 py-3 text-left">Oluşturulma</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800/50">
+      {% for u in users[:8] %}
+      <tr class="hover:bg-gray-800/30 transition-colors">
+        <td class="px-5 py-3 font-mono text-indigo-300">{{ u.username }}</td>
+        <td class="px-5 py-3 text-gray-400 font-mono text-xs">
+          {{ u.port_prefix * 1000 }} – {{ u.port_prefix * 1000 + 999 }}
+        </td>
+        <td class="px-5 py-3">
+          <span class="px-2 py-0.5 rounded-full text-xs
+            {% if u.status == 'active' %}bg-emerald-900/50 text-emerald-400{% else %}bg-red-900/50 text-red-400{% endif %}">
+            {{ u.status }}
+          </span>
+        </td>
+        <td class="px-5 py-3 text-gray-500 text-xs">{{ u.created_at[:16] }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="px-5 py-6 text-center text-gray-600">Henüz kullanıcı yok</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// CPU'yu 5 sn'de bir güncelle
+async function updateStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    document.getElementById('cpu-val').textContent = d.cpu + '%';
+    document.getElementById('cpu-bar').style.width = d.cpu + '%';
+  } catch(e) {}
+}
+setInterval(updateStats, 5000);
+</script>
+{% endblock %}

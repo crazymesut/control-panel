@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}Domainler — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-center justify-between">
+  <div>
+    <h1 class="text-xl font-bold text-white">Domainler</h1>
+    <p class="text-gray-500 text-sm mt-0.5">Nginx reverse proxy & SSL yönetimi</p>
+  </div>
+  <button onclick="document.getElementById('modal-add').classList.remove('hidden')"
+    class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+    + Domain Ekle
+  </button>
+</div>
+
+{% if msg %}
+<div class="mb-4 px-4 py-3 bg-emerald-900/40 border border-emerald-700/50 rounded-lg text-sm text-emerald-300">✓ {{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="mb-4 px-4 py-3 bg-red-900/40 border border-red-700/50 rounded-lg text-sm text-red-300">⚠ {{ err }}</div>
+{% endif %}
+
+<!-- Domain Tablosu -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-500 text-xs uppercase tracking-wide border-b border-gray-800">
+        <th class="px-5 py-3 text-left">Domain</th>
+        <th class="px-5 py-3 text-left">Kullanıcı</th>
+        <th class="px-5 py-3 text-left">Hedef Port</th>
+        <th class="px-5 py-3 text-left">SSL</th>
+        <th class="px-5 py-3 text-left">Oluşturulma</th>
+        <th class="px-5 py-3 text-right">İşlemler</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800/50">
+      {% for d in domains %}
+      <tr class="hover:bg-gray-800/30 transition-colors">
+        <td class="px-5 py-3">
+          <div class="font-mono text-emerald-300">{{ d.domain }}</div>
+          <a href="http://{{ d.domain }}" target="_blank"
+            class="text-gray-600 text-xs hover:text-gray-400 transition-colors">
+            http://{{ d.domain }} ↗
+          </a>
+        </td>
+        <td class="px-5 py-3">
+          <span class="font-mono text-indigo-300 text-xs">{{ d.username }}</span>
+          <span class="text-gray-600 text-xs ml-1">(prefix: {{ d.port_prefix }})</span>
+        </td>
+        <td class="px-5 py-3 font-mono text-amber-300 text-sm">:{{ d.target_port }}</td>
+        <td class="px-5 py-3">
+          {% if d.ssl_enabled %}
+          <span class="px-2.5 py-1 rounded-full text-xs bg-emerald-900/60 text-emerald-400">🔒 HTTPS</span>
+          {% else %}
+          <span class="px-2.5 py-1 rounded-full text-xs bg-gray-800 text-gray-500">HTTP</span>
+          {% endif %}
+        </td>
+        <td class="px-5 py-3 text-gray-500 text-xs">{{ d.created_at[:16] }}</td>
+        <td class="px-5 py-3 text-right">
+          <div class="flex items-center justify-end gap-2">
+            {% if not d.ssl_enabled %}
+            <form method="post" action="/domains/ssl" class="inline"
+              onsubmit="return confirm('{{ d.domain }} için SSL alınacak. DNS bu sunucuya yönlendirilmiş olmalıdır. Devam?')">
+              <input type="hidden" name="domain_id" value="{{ d.id }}">
+              <button type="submit"
+                class="bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+                🔒 SSL Al
+              </button>
+            </form>
+            {% else %}
+            <form method="post" action="/domains/ssl-renew" class="inline"
+              onsubmit="return confirm('{{ d.domain }} SSL sertifikası yenilenecek. Devam?')">
+              <input type="hidden" name="domain_id" value="{{ d.id }}">
+              <button type="submit"
+                class="bg-teal-800 hover:bg-teal-700 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+                🔄 Yenile
+              </button>
+            </form>
+            {% endif %}
+            <form method="post" action="/domains/delete" class="inline"
+              onsubmit="return confirm('{{ d.domain }} domainini silmek istediğinizden emin misiniz?')">
+              <input type="hidden" name="domain_id" value="{{ d.id }}">
+              <button type="submit"
+                class="bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+                Sil
+              </button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6" class="px-5 py-10 text-center text-gray-600">
+          Henüz domain eklenmedi.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Açıklama -->
+<div class="mt-6 bg-gray-900/50 border border-gray-800 rounded-xl p-5">
+  <h3 class="text-sm font-semibold text-gray-300 mb-2">ℹ️ Nasıl Çalışır?</h3>
+  <p class="text-gray-500 text-xs leading-relaxed">
+    Domain eklendiğinde Nginx otomatik olarak o domain için reverse proxy konfigürasyonu oluşturur.
+    Hedef port, kullanıcının port bloğu içinde olmalıdır.
+    SSL için önce domainin DNS'i bu sunucuya yönlendirilmiş olmalıdır.
+    SSL seçilirse Let's Encrypt ile ücretsiz sertifika otomatik alınır.
+  </p>
+</div>
+
+<!-- MODAL: Domain Ekle -->
+<div id="modal-add" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+  <div class="bg-gray-900 border border-gray-700 rounded-2xl p-7 w-full max-w-md shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-lg font-bold text-white">Yeni Domain</h2>
+      <button onclick="document.getElementById('modal-add').classList.add('hidden')"
+        class="text-gray-600 hover:text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <form method="post" action="/domains/create" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">Domain Adı</label>
+        <input name="domain" type="text" required
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+          placeholder="ornek.com">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">Kullanıcı</label>
+        <select name="user_id" id="sel-user" required onchange="updatePortHint()"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <option value="">— Kullanıcı seçin —</option>
+          {% for u in users %}
+          <option value="{{ u.id }}" data-prefix="{{ u.port_prefix }}">
+            {{ u.username }} (port bloğu: {{ u.port_prefix * 1000 }}–{{ u.port_prefix * 1000 + 999 }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">
+          Hedef Port
+          <span id="port-hint" class="text-gray-600 ml-1">(kullanıcı seçin)</span>
+        </label>
+        <input name="target_port" id="inp-port" type="number" required min="10000" max="59999"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+          placeholder="10080">
+        <p class="text-gray-600 text-xs mt-1">Kullanıcının Docker container'ının host portu</p>
+      </div>
+      <div class="flex items-center gap-3 py-1">
+        <input type="checkbox" name="get_ssl" id="chk-ssl" value="true"
+          class="w-4 h-4 rounded bg-gray-800 border-gray-600 accent-indigo-500">
+        <label for="chk-ssl" class="text-sm text-gray-300">
+          SSL Sertifikası Al (Let's Encrypt)
+          <span class="text-gray-600 text-xs block">DNS bu sunucuya yönlendirilmiş olmalıdır</span>
+        </label>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit"
+          class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+          Ekle & Nginx'i Güncelle
+        </button>
+        <button type="button" onclick="document.getElementById('modal-add').classList.add('hidden')"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-lg text-sm transition-colors">
+          İptal
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updatePortHint() {
+  const sel = document.getElementById('sel-user');
+  const opt = sel.selectedOptions[0];
+  const prefix = opt ? opt.dataset.prefix : null;
+  const hint = document.getElementById('port-hint');
+  const inp  = document.getElementById('inp-port');
+  if (prefix) {
+    const min = prefix * 1000, max = min + 999;
+    hint.textContent = `aralık: ${min}–${max}`;
+    inp.min = min; inp.max = max;
+    inp.placeholder = min + 80;
+    if (!inp.value) inp.value = min + 80;
+  } else {
+    hint.textContent = '(kullanıcı seçin)';
+    inp.min = 10000; inp.max = 59999; inp.placeholder = '10080';
+  }
+}
+</script>
+{% endblock %}

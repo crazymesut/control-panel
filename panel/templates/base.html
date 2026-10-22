@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="tr" class="h-full bg-gray-950">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}VPS Panel{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { colors: { brand: '#6366f1' } } }
+    }
+  </script>
+  <style>
+    .stat-card { @apply bg-gray-800 rounded-xl p-4 border border-gray-700; }
+    .btn-primary { @apply bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors; }
+    .btn-danger  { @apply bg-red-700 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors; }
+    .btn-secondary { @apply bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors; }
+  </style>
+</head>
+<body class="h-full text-gray-100">
+<div class="flex h-full">
+
+  <!-- Yan Menü -->
+  <aside class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col">
+    <div class="px-5 py-5 border-b border-gray-800">
+      <div class="text-indigo-400 font-bold text-lg">⚡ VPS Panel</div>
+      <div class="text-gray-500 text-xs mt-0.5">{{ admin }}</div>
+    </div>
+    <nav class="flex-1 px-3 py-4 space-y-1">
+      <a href="/" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
+        {% if request.url.path == '/' %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span>🖥</span> Dashboard
+      </a>
+      <a href="/users" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
+        {% if '/users' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span>👤</span> Kullanıcılar
+      </a>
+      <a href="/domains" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
+        {% if '/domains' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span>🌐</span> Domainler
+      </a>
+      <a href="/settings" class="nav-link flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm
+        {% if '/settings' in request.url.path %}bg-indigo-600/20 text-indigo-400{% else %}text-gray-400 hover:text-white hover:bg-gray-800{% endif %}">
+        <span>⚙️</span> Ayarlar
+      </a>
+    </nav>
+    <div class="px-3 py-4 border-t border-gray-800">
+      <a href="/logout" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors">
+        <span>🚪</span> Çıkış
+      </a>
+    </div>
+  </aside>
+
+  <!-- Ana İçerik -->
+  <main class="flex-1 overflow-auto bg-gray-950">
+    <div class="px-8 py-6">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+</div>
+{% block scripts %}{% endblock %}
+
+<script>
+// ── Form butonları: submit sonrası loading göster ──────────
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('form').forEach(form => {
+    form.addEventListener('submit', function(e) {
+      // onsubmit="return confirm(...)" false döndürdüyse iptal
+      const btn = this.querySelector('button[type="submit"], button:not([type])');
+      if (!btn || btn.dataset.loading) return;
+      btn.dataset.loading = '1';
+
+      const original = btn.innerHTML;
+      const w = btn.offsetWidth;
+      btn.style.minWidth = w + 'px';
+      btn.disabled = true;
+      btn.innerHTML = `
+        <svg class="inline-block animate-spin mr-1.5" style="width:14px;height:14px;vertical-align:-2px"
+          xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        İşleniyor…`;
+
+      // Sayfa geri gelirse (hata vb.) butonu sıfırla
+      window.addEventListener('pageshow', () => {
+        btn.disabled = false;
+        btn.innerHTML = original;
+        delete btn.dataset.loading;
+      });
+    });
+  });
+});
+</script>
+</body>
+</html>
