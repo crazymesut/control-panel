@@ -231,7 +231,8 @@ cat > "$PANEL_DIR/.env" << ENV
 PANEL_ADMIN=${PANEL_ADMIN}
 PANEL_PASSWORD=${PANEL_PASSWORD}
 PANEL_EMAIL=${PANEL_EMAIL}
-PANEL_PORT_INTERNAL=$((PANEL_PORT + 10000))  # Dahili port (max 65535 sınırı içinde)
+# Dahili port (max 65535 sınırı içinde). systemd satır sonu yorumlarını tanımaz, yorum ayrı satırda olmalı.
+PANEL_PORT_INTERNAL=$((PANEL_PORT + 10000))
 ENV
 chmod 600 "$PANEL_DIR/.env"
 

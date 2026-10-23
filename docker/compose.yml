@@ -1,0 +1,33 @@
+# VPS Panel — test ortamı (Ubuntu 24.04 + systemd)
+#
+#   docker compose -f docker/compose.yml up -d --build
+#   docker compose -f docker/compose.yml exec panel-test bash /src/docker/e2e.sh
+#   docker compose -f docker/compose.yml exec panel-test bash        # elle denemek için
+#   docker compose -f docker/compose.yml down -v                     # her şeyi sil (sıfırdan başlamak için)
+#
+# (Bağımsız docker-compose kuruluysa "docker compose" yerine "docker-compose" yazın.)
+name: vps-panel-test
+
+services:
+  panel-test:
+    build: .
+    container_name: vps-panel-test
+    hostname: vps-test
+    privileged: true            # systemd + UFW + Fail2ban için gerekli
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+    volumes:
+      - ..:/src:ro              # repo salt okunur; update.sh testi kopya üzerinde çalışır
+      # Kullanıcıların rootless Docker'ı overlay'i container'ın kendi overlay'i
+      # üstünde kullanamaz (overlay-on-overlay); /home gerçek bir dosya sisteminde olmalı.
+      - home:/home
+    ports:
+      # Host'taki 80/443 başka servislerce kullanılıyor olabilir; yüksek portlara bağlanır.
+      - "8765:8765"             # panel (https, self-signed)
+      - "8080:80"               # kullanıcı domainleri (Host başlığı ile)
+
+volumes:
+  home:
