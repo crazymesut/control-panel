@@ -69,6 +69,11 @@
               class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
               🐳
             </button>
+            <!-- SSH Anahtarları -->
+            <a href="/users/{{ u.username }}/ssh" title="SSH anahtarları"
+              class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+              🔑
+            </a>
             <!-- Aktif/Pasif -->
             <form method="post" action="/users/toggle" class="inline">
               <input type="hidden" name="user_id" value="{{ u.id }}">

@@ -30,7 +30,7 @@ U2=e2e_bob;   U2_PASS='Sup3rSecret!bob';   D2=bob.e2e.test
 U3=e2e_carol; U3_PASS='Sup3rSecret!carol'; D3=carol.e2e.test
 PANEL_DOMAIN=panel.e2e.test
 
-JAR="$(mktemp)"; BODY="$(mktemp)"; WWW="$(mktemp -d)"
+JAR="$(mktemp)"; BODY="$(mktemp)"; WWW="$(mktemp -d)"; KEYS="$(mktemp -d)"
 BACKEND_PID=""
 PASS_N=0; FAIL_N=0; FAILED=()
 
@@ -81,6 +81,13 @@ ssh_ok() {
         -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 \
         "$1@127.0.0.1" 'echo ssh-ok' 2>/dev/null | grep -q ssh-ok
 }
+# /etc/shadow'daki hesap bitiş alanı (8.): boş = sınırsız, sayı = o günde dolar
+shadow_expire() { awk -F: -v u="$1" '$1==u{print $8}' /etc/shadow; }
+ssh_key_ok() {   # $1=kullanıcı  $2=özel anahtar dosyası
+    ssh -i "$2" -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o BatchMode=yes -o ConnectTimeout=5 "$1@127.0.0.1" 'echo ssh-ok' 2>/dev/null | grep -q ssh-ok
+}
 wait_panel() {
     for _ in $(seq 1 30); do
         [[ "$(curl -sk -o /dev/null -w '%{http_code}' "$BASE/login")" == 200 ]] && return 0
@@ -98,7 +105,7 @@ wait_port() {   # $1=port
 
 cleanup() {
     [[ -n "$BACKEND_PID" ]] && kill "$BACKEND_PID" 2>/dev/null
-    rm -rf "$JAR" "$BODY" "$WWW" /tmp/e2e-update-src /tmp/e2e-nginx-*
+    rm -rf "$JAR" "$BODY" "$WWW" "$KEYS" /tmp/e2e-update-src /tmp/e2e-nginx-*
 }
 trap cleanup EXIT
 
@@ -246,7 +253,102 @@ eq "kullanıcılar birbirinin home'unu okuyamaz" "Permission denied" \
 check "bob da SSH ile girebiliyor" ssh_ok "$U2" "$U2_PASS"
 
 # ============================================================
-section "5 — Domain ekleme / silme"
+section "5 — SSH anahtarları"
+# ============================================================
+AK="/home/$U1/.ssh/authorized_keys"
+get "/users/$U1/ssh";  eq "SSH anahtar sayfası açılıyor" 200 "$CODE"
+contains "sayfa authorized_keys yolunu gösteriyor" "$(cat "$BODY")" "$AK"
+get "/users/yok_boyle_bir_kullanici/ssh"
+eq "olmayan kullanıcı /users'a yönlendirilir" 302 "$CODE"
+
+# Geçersiz genel anahtarlar reddedilmeli ve dosyaya dokunulmamalı
+for bad in 'merhaba' 'ssh-ed25519' 'ssh-ed25519 bu-base64-degil!!' 'ssh-dss AAAAB3NzaC1kc3M=' \
+           'command="rm -rf /" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA'; do
+    post "/users/$U1/ssh/add" --data-urlencode "pubkey=$bad"
+    contains "geçersiz anahtar reddedilir: '${bad:0:24}'" "$LOC" "err="
+done
+eq "reddedilen anahtarlar dosyaya yazılmadı" 0 "$(wc -l < "$AK")"
+
+# ── Yapıştırılan genel anahtar ─────────────────────────────
+ssh-keygen -q -t ed25519 -N '' -C 'e2e-yapistirilan' -f "$KEYS/pasted"
+post "/users/$U1/ssh/add" --data-urlencode "pubkey=$(cat "$KEYS/pasted.pub")"
+contains "genel anahtar eklendi" "$LOC" "ED25519 anahtarı eklendi"
+eq "authorized_keys tek satır" 1 "$(wc -l < "$AK")"
+eq "authorized_keys izni 600" 600 "$(stat -c %a "$AK")"
+eq "authorized_keys sahibi" "$U1" "$(stat -c %U "$AK")"
+eq ".ssh izni 700" 700 "$(stat -c %a "/home/$U1/.ssh")"
+check "yapıştırılan anahtarla SSH girişi çalışıyor" ssh_key_ok "$U1" "$KEYS/pasted"
+FP="$(ssh-keygen -lf "$KEYS/pasted.pub" | awk '{print $2}')"
+get "/users/$U1/ssh"
+contains "parmak izi ssh-keygen ile aynı" "$(cat "$BODY")" "$FP"
+contains "anahtar açıklaması listeleniyor" "$(cat "$BODY")" "e2e-yapistirilan"
+
+# Aynı anahtar iki kez eklenemez
+post "/users/$U1/ssh/add" --data-urlencode "pubkey=$(cat "$KEYS/pasted.pub")"
+contains "yinelenen anahtar reddedilir" "$LOC" "zaten ekli"
+post "/users/$U1/ssh/add" --data-urlencode "pubkey=$(awk '{print $1" "$2" baska-aciklama"}' "$KEYS/pasted.pub")"
+contains "açıklaması farklı aynı anahtar reddedilir" "$LOC" "zaten ekli"
+eq "yinelenenler dosyayı büyütmedi" 1 "$(wc -l < "$AK")"
+
+# ── Panelde anahtar üretme ─────────────────────────────────
+post "/users/$U1/ssh/generate" --data-urlencode "key_type=ed25519" --data-urlencode "comment=e2e-uretilen"
+eq "üretim sonrası yönlendirme" 302 "$CODE"
+contains "özel anahtar tek seferlik token ile sunuluyor" "$LOC" "new="
+TOKEN="${LOC#*new=}"
+eq "authorized_keys iki satır" 2 "$(wc -l < "$AK")"
+get "/users/$U1/ssh?new=$TOKEN"
+contains "özel anahtar bir kez gösteriliyor" "$(cat "$BODY")" "BEGIN OPENSSH PRIVATE KEY"
+sed -n '/BEGIN OPENSSH PRIVATE KEY/,/END OPENSSH PRIVATE KEY/p' "$BODY" > "$KEYS/generated"
+chmod 600 "$KEYS/generated"
+check "indirilen özel anahtar geçerli" ssh-keygen -y -f "$KEYS/generated"
+check "üretilen anahtarla SSH girişi çalışıyor" ssh_key_ok "$U1" "$KEYS/generated"
+get "/users/$U1/ssh?new=$TOKEN"
+absent "aynı token ikinci kez özel anahtar vermiyor" "$(cat "$BODY")" "BEGIN OPENSSH PRIVATE KEY"
+get "/users/$U1/ssh?new=uydurma-token"
+absent "uydurma token özel anahtar vermiyor" "$(cat "$BODY")" "BEGIN OPENSSH PRIVATE KEY"
+eq "özel anahtar diske yazılmadı" 0 "$(grep -rl 'BEGIN OPENSSH PRIVATE KEY' $PANEL_DIR 2>/dev/null | wc -l)"
+
+post "/users/$U1/ssh/generate" --data-urlencode "key_type=dsa" --data-urlencode "comment=x"
+contains "geçersiz üretim türü reddedilir" "$LOC" "Geçersiz anahtar türü"
+eq "reddedilen üretim dosyaya yazmadı" 2 "$(wc -l < "$AK")"
+
+# ── Pasif kullanıcı: anahtar var ama giriş yok ─────────────
+post /users/toggle --data-urlencode "user_id=$(db_id $U1)"
+eq "pasifte hesap süresi dolmuş işaretlendi" 1 "$(shadow_expire $U1)"
+check_not "pasif kullanıcı anahtarla giremez" ssh_key_ok "$U1" "$KEYS/pasted"
+check_not "pasif kullanıcı parolayla da giremez" ssh_ok "$U1" "$U1_PASS"
+check "pasifken anahtarlar dosyada duruyor" test -s "$AK"
+post /users/toggle --data-urlencode "user_id=$(db_id $U1)"
+eq "aktifte hesap süresi tekrar sınırsız" "" "$(shadow_expire $U1)"
+check "yeniden aktif olunca anahtarla girilebiliyor" ssh_key_ok "$U1" "$KEYS/pasted"
+
+# ── Panel dışında eklenmiş satır korunmalı ─────────────────
+ssh-keygen -q -t ed25519 -N '' -C 'elle-eklenen' -f "$KEYS/manual"
+cat "$KEYS/manual.pub" >> "$AK"
+get "/users/$U1/ssh"
+contains "elle eklenen anahtar listede" "$(cat "$BODY")" "elle-eklenen"
+
+# ── Anahtar silme ──────────────────────────────────────────
+KID="$(grep -oP "name=\"key_id\" value=\"\K[0-9a-f]+" "$BODY" | head -1)"
+post "/users/$U1/ssh/delete" --data-urlencode "key_id=$KID"
+contains "anahtar silindi" "$LOC" "anahtarı silindi"
+eq "dosyada iki anahtar kaldı" 2 "$(wc -l < "$AK")"
+check_not "silinen anahtarla SSH girişi reddediliyor" ssh_key_ok "$U1" "$KEYS/pasted"
+check "silmeden etkilenmeyen anahtar hâlâ çalışıyor" ssh_key_ok "$U1" "$KEYS/generated"
+check "parola ile giriş etkilenmedi" ssh_ok "$U1" "$U1_PASS"
+post "/users/$U1/ssh/delete" --data-urlencode "key_id=$KID"
+contains "olmayan anahtar silinemez" "$LOC" "Anahtar bulunamadı"
+for a in ssh.key_add ssh.key_generate ssh.key_delete; do
+    n="$(db "SELECT COUNT(*) FROM activity_log WHERE action='$a' AND target='$U1' AND status='ok'")"
+    [[ "$n" -ge 1 ]] && ok "etkinlik kaydı: $a ($n)" || bad "etkinlik kaydı yok: $a"
+done
+eq "etkinlik kaydı: reddedilen eklemeler 'error'" 5 \
+    "$(db "SELECT COUNT(*) FROM activity_log WHERE action='ssh.key_add' AND status='error'")"
+get "/logs?category=ssh"; eq "/logs ssh kategorisi" 200 "$CODE"
+
+# ============================================================
+# ============================================================
+section "6 — Domain ekleme / silme"
 # ============================================================
 UID1="$(db_id $U1)"
 D1B="www.$D1"; D1C="api.$D1"
@@ -278,13 +380,14 @@ post /domains/delete --data-urlencode "domain_id=99999"
 contains "olmayan domain silinemez" "$LOC" "Domain bulunamadı"
 
 # ============================================================
-section "6 — Kullanıcı pasifleştirme / aktifleştirme (güncelleme)"
+section "7 — Kullanıcı pasifleştirme / aktifleştirme (güncelleme)"
 # ============================================================
 post /users/toggle --data-urlencode "user_id=$UID1"
 contains "pasifleştirildi" "$LOC" "pasif"
 eq "DB: inactive" inactive "$(db "SELECT status FROM users WHERE username='$U1'")"
 eq "passwd durumu: kilitli (L)" L "$(passwd -S $U1 | awk '{print $2}')"
 check_not "pasif kullanıcı SSH ile giremez" ssh_ok "$U1" "$U1_PASS"
+check_not "pasif kullanıcı SSH anahtarıyla da giremez" ssh_key_ok "$U1" "$KEYS/generated"
 check_not "nginx symlink kaldırıldı" test -L "/etc/nginx/sites-enabled/vps-users/$D1.conf"
 check "nginx conf dosyası korundu" test -f "/etc/nginx/sites-available/vps-users/$D1.conf"
 eq "pasif kullanıcının domaini yanıtlanmıyor" 000 "$(web_code $D1)"
@@ -298,13 +401,14 @@ contains "aktifleştirildi" "$LOC" "aktif"
 eq "DB: active" active "$(db "SELECT status FROM users WHERE username='$U1'")"
 eq "passwd durumu: açık (P)" P "$(passwd -S $U1 | awk '{print $2}')"
 check "aktif kullanıcı tekrar SSH ile girebiliyor" ssh_ok "$U1" "$U1_PASS"
+check "aktif kullanıcı tekrar SSH anahtarıyla girebiliyor" ssh_key_ok "$U1" "$KEYS/generated"
 check "nginx symlink geri geldi" test -L "/etc/nginx/sites-enabled/vps-users/$D1.conf"
 eq "domain tekrar yanıtlanıyor" 200 "$(web_code $D1)"
 post /users/toggle --data-urlencode "user_id=99999"
 contains "olmayan kullanıcı toggle edilemez" "$LOC" "Kullanıcı bulunamadı"
 
 # ============================================================
-section "7 — Rootless Docker ve panelden container listesi"
+section "8 — Rootless Docker ve panelden container listesi"
 # ============================================================
 if [[ "${E2E_SKIP_DOCKER:-0}" == 1 ]]; then
     info "E2E_SKIP_DOCKER=1 → atlandı"
@@ -326,7 +430,7 @@ else
 fi
 
 # ============================================================
-section "8 — Nginx editörü"
+section "9 — Nginx editörü"
 # ============================================================
 KEY="sites-available/vps-users/$D1.conf"; CONF="/etc/nginx/$KEY"
 BK=/var/backups/vps-panel-nginx
@@ -383,7 +487,7 @@ post /nginx/reload --data-urlencode "file=$KEY"
 contains "reload düğmesi" "$(cat "$BODY")" "reload edildi"
 
 # ============================================================
-section "9 — Panel domain ayarı"
+section "10 — Panel domain ayarı"
 # ============================================================
 post /settings/domain --data-urlencode "domain=$PANEL_DOMAIN"
 contains "panel domaini ayarlandı" "$LOC" "ayarlandı"
@@ -394,7 +498,7 @@ post /settings/domain --data-urlencode "domain=-bozuk-"
 contains "geçersiz panel domaini reddedilir" "$LOC" "Geçersiz domain"
 
 # ============================================================
-section "10 — Kayıtlar (activity log)"
+section "11 — Kayıtlar (activity log)"
 # ============================================================
 for a in auth.login auth.login_failed user.create user.toggle domain.create domain.delete nginx.save settings.domain; do
     n="$(db "SELECT COUNT(*) FROM activity_log WHERE action='$a'")"
@@ -406,7 +510,7 @@ get "/logs?category=%3Cscript%3E";  eq "/logs geçersiz kategori çökmez" 200 "
 get /;                             contains "dashboard son işlemleri gösteriyor" "$(cat "$BODY")" "$U1"
 
 # ============================================================
-section "11 — Kullanıcı silme"
+section "12 — Kullanıcı silme"
 # ============================================================
 UID2_LINUX="$(id -u $U2)"
 UID2="$(db_id $U2)"
@@ -438,7 +542,7 @@ post /users/delete --data-urlencode "user_id=$(db_id $U3)"
 contains "$U3 silindi" "$LOC" "silindi"
 
 # ============================================================
-section "12 — Güncelleme (update.sh)"
+section "13 — Güncelleme (update.sh)"
 # ============================================================
 snap() {
     { db "SELECT username, password_hash FROM admins ORDER BY id;
@@ -478,7 +582,7 @@ eq "panel domain ayarı korundu" 200 "$(web_code $PANEL_DOMAIN /login)"
 [[ "$(db "SELECT COUNT(*) FROM activity_log")" -ge "$LOGS_BEFORE" ]] && ok "etkinlik geçmişi korundu" || bad "etkinlik geçmişi azaldı"
 
 # ============================================================
-section "13 — setup.sh'i yeniden çalıştırma (idempotency)"
+section "14 — setup.sh'i yeniden çalıştırma (idempotency)"
 # ============================================================
 SNAP_BEFORE="$(snap)"
 PANEL_PASSWORD="$ADMIN_PASS" PANEL_ADMIN="$ADMIN" PANEL_EMAIL=e2e@example.com \
@@ -498,7 +602,7 @@ eq "admin girişi çalışıyor" 302 "$(login)"
 eq ".env'deki dahili port satırı geçerli" 1 "$(grep -cE '^PANEL_PORT_INTERNAL=[0-9]+$' $PANEL_DIR/.env)"
 
 # ============================================================
-section "14 — Temizlik: panel domaini ve kullanıcı silme (container çalışırken)"
+section "15 — Temizlik: panel domaini ve kullanıcı silme (container çalışırken)"
 # ============================================================
 post /settings/domain-remove
 contains "panel domain ayarı kaldırıldı" "$LOC" "kaldırıldı"

@@ -2,6 +2,7 @@
 VPS Panel — Ana Uygulama (FastAPI)
 """
 import os, secrets, subprocess, json, sqlite3, bcrypt, psutil, re, shlex, shutil
+import base64, hashlib, pwd, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -133,8 +134,9 @@ def run(cmd: list[str], check=True) -> tuple[int, str, str]:
 # ── Aktivite kayıtları ─────────────────────────────────────
 LOG_KEEP      = 10000   # en son bu kadar kayıt tutulur
 LOG_PAGE_SIZE = 50
-LOG_CATEGORIES = {"auth": "Oturum", "user": "Kullanıcı", "domain": "Domain",
-                  "ssl": "SSL", "nginx": "Nginx", "settings": "Ayarlar"}
+LOG_CATEGORIES = {"auth": "Oturum", "user": "Kullanıcı", "ssh": "SSH Anahtarı",
+                  "domain": "Domain", "ssl": "SSL", "nginx": "Nginx",
+                  "settings": "Ayarlar"}
 ACTION_LABELS = {
     "auth.login":            "Giriş",
     "auth.login_failed":     "Başarısız giriş",
@@ -142,6 +144,9 @@ ACTION_LABELS = {
     "user.create":           "Kullanıcı oluşturma",
     "user.delete":           "Kullanıcı silme",
     "user.toggle":           "Kullanıcı aktif/pasif",
+    "ssh.key_add":           "SSH anahtarı ekleme",
+    "ssh.key_generate":      "SSH anahtarı üretme",
+    "ssh.key_delete":        "SSH anahtarı silme",
     "domain.create":         "Domain ekleme",
     "domain.delete":         "Domain silme",
     "ssl.issue":             "SSL sertifikası alma",
@@ -420,9 +425,12 @@ async def user_toggle(request: Request, session=Depends(require_login),
         db.execute("UPDATE users SET status=? WHERE id=?", (new_status, user_id))
         db.commit()
 
-        # SSH erişimini aç/kapat
-        action = "unlock" if new_status == "active" else "lock"
-        run(["passwd", f"--{action}", username], check=False)
+        # SSH erişimini aç.
+        # Hesabın süresi dolmuşken runuser (aşağıdaki docker adımı) PAM
+        # account kontrolüne takılır, bu yüzden açma işlemi en başta yapılır.
+        if new_status == "active":
+            run(["passwd", "--unlock", username], check=False)
+            run(["chage", "-E", "-1", username], check=False)
 
         # Kullanıcının tüm domain nginx config'lerini aç/kapat
         domains = db.execute("SELECT domain FROM domains WHERE user_id=?", (user_id,)).fetchall()
@@ -446,6 +454,13 @@ async def user_toggle(request: Request, session=Depends(require_login),
                 f"systemctl --user {docker_action} docker.service 2>/dev/null || true"
             ], capture_output=True)
 
+        # SSH erişimini kapat — docker durdurulduktan SONRA.
+        # passwd --lock yalnızca parolayı kilitler, authorized_keys ile giriş
+        # açık kalırdı; hesabın süresini de doldurarak her iki yolu kapatıyoruz.
+        if new_status == "inactive":
+            run(["passwd", "--lock", username], check=False)
+            run(["chage", "-E", "1", username], check=False)   # 2 Ocak 1970 → süresi dolmuş
+
         try:
             nginx_reload()
         except Exception:
@@ -456,6 +471,263 @@ async def user_toggle(request: Request, session=Depends(require_login),
         return RedirectResponse(f"/users?msg=Kullanıcı+{username}+{durum}+yapıldı+(web+erişimi+{'kapatıldı' if new_status == 'inactive' else 'açıldı'})", status_code=302)
     finally:
         db.close()
+
+# ══════════════════════════════════════════════════════════
+#  SSH ANAHTAR YÖNETİMİ
+# ══════════════════════════════════════════════════════════
+# Desteklenen genel anahtar türleri → ekranda gösterilen etiket.
+# ssh-dss (DSA) bilerek dışarıda: OpenSSH 7.0'dan beri varsayılan olarak kapalı.
+PUBKEY_TYPES = {
+    "ssh-ed25519":                        "ED25519",
+    "ssh-rsa":                            "RSA",
+    "ecdsa-sha2-nistp256":                "ECDSA",
+    "ecdsa-sha2-nistp384":                "ECDSA",
+    "ecdsa-sha2-nistp521":                "ECDSA",
+    "sk-ssh-ed25519@openssh.com":         "ED25519-SK",
+    "sk-ecdsa-sha2-nistp256@openssh.com": "ECDSA-SK",
+}
+RSA_MIN_BITS     = 2048
+PUBKEY_MAX_BYTES = 16 * 1024    # yapıştırılan metin için üst sınır
+KEYGEN_TYPES     = {"ed25519": [], "rsa": ["-b", "4096"]}
+NEWKEY_TTL_SEC   = 600          # üretilen özel anahtarın bellekte kalma süresi
+
+# Üretilen özel anahtarlar: token → kayıt. Diske veya DB'ye hiç yazılmaz,
+# bir kez gösterilip silinir (bkz. pop_generated).
+_new_keys: dict[str, dict] = {}
+
+def find_user(username: str) -> Optional[sqlite3.Row]:
+    db = get_db()
+    try:
+        return db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    finally:
+        db.close()
+
+def ssh_dir(username: str) -> Path:
+    return Path(pwd.getpwnam(username).pw_dir) / ".ssh"
+
+def auth_keys_path(username: str) -> Path:
+    return ssh_dir(username) / "authorized_keys"
+
+def _ssh_blob_fields(blob: bytes) -> list[bytes]:
+    """SSH tel formatı: art arda 4 bayt uzunluk + veri."""
+    fields, i = [], 0
+    while i + 4 <= len(blob):
+        n = int.from_bytes(blob[i:i + 4], "big")
+        i += 4
+        if n > len(blob) - i:
+            raise ValueError("anahtar gövdesi bozuk")
+        fields.append(blob[i:i + n])
+        i += n
+    if i != len(blob) or not fields:
+        raise ValueError("anahtar gövdesi bozuk")
+    return fields
+
+def _key_bits(ktype: str, fields: list[bytes]) -> int:
+    if ktype == "ssh-rsa":
+        if len(fields) < 3:                      # tür, üs (e), modül (n)
+            raise ValueError("anahtar gövdesi eksik")
+        return len(fields[2].lstrip(b"\x00")) * 8
+    m = re.search(r"nistp(\d+)", ktype)
+    return int(m.group(1)) if m else 256
+
+def parse_pubkey(text: str) -> dict:
+    """Genel anahtarı doğrula ve normalize et. Geçersizse ValueError atar."""
+    text = text.strip()
+    if not text:
+        raise ValueError("Genel anahtar boş olamaz")
+    if len(text.encode()) > PUBKEY_MAX_BYTES:
+        raise ValueError("Genel anahtar çok uzun")
+    if "\n" in text or "\r" in text:
+        raise ValueError("Tek satırlık bir genel anahtar yapıştırın (id_ed25519.pub içeriği)")
+
+    parts = text.split()
+    if len(parts) < 2:
+        raise ValueError("Anahtar biçimi hatalı: '<tür> <anahtar> [açıklama]' bekleniyor")
+    ktype, b64 = parts[0], parts[1]
+    if ktype not in PUBKEY_TYPES:
+        if ktype == "ssh-dss":
+            raise ValueError("DSA anahtarları desteklenmiyor, ed25519 kullanın")
+        raise ValueError(f"Desteklenmeyen anahtar türü: {ktype[:40]} "
+                         "(ssh-ed25519, ssh-rsa veya ecdsa-* bekleniyor)")
+    try:
+        blob = base64.b64decode(b64, validate=True)
+    except Exception:
+        raise ValueError("Anahtar gövdesi base64 olarak çözülemedi — eksik kopyalanmış olabilir")
+
+    fields = _ssh_blob_fields(blob)
+    if fields[0].decode("utf-8", "replace") != ktype:
+        raise ValueError("Anahtar gövdesi belirtilen tür ile uyuşmuyor")
+    bits = _key_bits(ktype, fields)
+    if ktype == "ssh-rsa" and bits < RSA_MIN_BITS:
+        raise ValueError(f"RSA anahtarı en az {RSA_MIN_BITS} bit olmalı (bu anahtar {bits} bit)")
+
+    # Açıklama tek satıra indirgenir; görünmeyen karakterler atılır
+    comment = "".join(c for c in " ".join(parts[2:]) if c.isprintable())[:120].strip()
+    line = f"{ktype} {b64}" + (f" {comment}" if comment else "")
+    return {
+        "type": ktype, "label": PUBKEY_TYPES[ktype], "bits": bits,
+        "comment": comment, "line": line,
+        "fingerprint": "SHA256:" + base64.b64encode(
+            hashlib.sha256(blob).digest()).decode().rstrip("="),
+        "key_id": hashlib.sha256(line.encode()).hexdigest()[:16],
+    }
+
+def read_auth_keys(username: str) -> list[dict]:
+    """authorized_keys içeriğini listele. Çözümlenemeyen satırlar da
+    (silinebilmeleri için) 'raw' olarak döner."""
+    path = auth_keys_path(username)
+    if not path.exists():
+        return []
+    keys = []
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            keys.append(parse_pubkey(line))
+        except ValueError:
+            keys.append({
+                "type": "?", "label": "Bilinmiyor", "bits": 0,
+                "comment": "", "line": line, "fingerprint": "",
+                "key_id": hashlib.sha256(line.encode()).hexdigest()[:16],
+            })
+    return keys
+
+def write_auth_keys(username: str, keys: list[dict]):
+    """authorized_keys'i atomik yaz; sahiplik ve izinleri sshd'nin
+    kabul edeceği şekilde ayarla (.ssh 700, authorized_keys 600)."""
+    pw   = pwd.getpwnam(username)
+    path = auth_keys_path(username)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    os.chown(path.parent, pw.pw_uid, pw.pw_gid)
+
+    tmp = path.with_name(path.name + ".panel-tmp")
+    try:
+        tmp.write_text("".join(k["line"] + "\n" for k in keys))
+        os.chmod(tmp, 0o600)
+        os.chown(tmp, pw.pw_uid, pw.pw_gid)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+def generate_keypair(comment: str, ktype: str) -> tuple[str, str]:
+    """Yeni anahtar çifti üret → (özel anahtar, genel anahtar).
+    Anahtar yalnızca geçici dizinde oluşur, dönüşte diskten silinir."""
+    with tempfile.TemporaryDirectory() as td:
+        kf = Path(td) / "id"
+        run(["ssh-keygen", "-q", "-t", ktype, *KEYGEN_TYPES[ktype],
+             "-N", "", "-C", comment, "-f", str(kf)])
+        return kf.read_text(), kf.with_name("id.pub").read_text().strip()
+
+def stash_generated(username: str, private: str, key: dict) -> str:
+    """Özel anahtarı tek seferlik gösterim için belleğe al, token döndür."""
+    now = datetime.now(timezone.utc)
+    for tok, rec in list(_new_keys.items()):
+        if (now - rec["at"]).total_seconds() > NEWKEY_TTL_SEC:
+            _new_keys.pop(tok, None)
+    token = secrets.token_urlsafe(24)
+    _new_keys[token] = {"username": username, "private": private, "key": key, "at": now}
+    return token
+
+def pop_generated(token: str, username: str) -> Optional[dict]:
+    """Üretilen anahtarı bir kez döndür ve bellekten sil."""
+    rec = _new_keys.pop(token, None) if token else None
+    if not rec or rec["username"] != username:
+        return None
+    if (datetime.now(timezone.utc) - rec["at"]).total_seconds() > NEWKEY_TTL_SEC:
+        return None
+    return rec
+
+def privkey_filename(username: str, ktype: str) -> str:
+    """İndirilen özel anahtar dosyasının adı: 'ahmet_id_ed25519' gibi."""
+    return f"{username}_id_{PUBKEY_TYPES.get(ktype, 'key').lower().replace('-', '_')}"
+
+def ssh_redirect(username: str, **params) -> RedirectResponse:
+    return RedirectResponse(f"/users/{username}/ssh?{urlencode(params)}", status_code=302)
+
+@app.get("/users/{username}/ssh", response_class=HTMLResponse)
+async def ssh_keys_page(request: Request, username: str, session=Depends(require_login),
+                        msg: str = "", err: str = "", new: str = ""):
+    user = find_user(username)
+    if not user:
+        return RedirectResponse("/users?err=Kullanıcı+bulunamadı", status_code=302)
+    try:
+        keys, read_err = read_auth_keys(username), ""
+    except Exception as e:
+        keys, read_err = [], f"authorized_keys okunamadı: {e}"
+    generated = pop_generated(new, username)
+    return templates.TemplateResponse(request, "ssh_keys.html", {
+        "admin": session["admin"], "user": user, "keys": keys,
+        "msg": msg, "err": err or read_err,
+        "generated": generated,
+        "filename": privkey_filename(username, generated["key"]["type"]) if generated else "",
+        "server_ip": get_server_ip(),
+        "keys_path": str(auth_keys_path(username)) if not read_err else "",
+    })
+
+@app.post("/users/{username}/ssh/add")
+async def ssh_key_add(request: Request, username: str, session=Depends(require_login),
+                      pubkey: str = Form(...)):
+    if not find_user(username):
+        return RedirectResponse("/users?err=Kullanıcı+bulunamadı", status_code=302)
+    try:
+        key = parse_pubkey(pubkey)
+        keys = read_auth_keys(username)
+        if any(k["key_id"] == key["key_id"] for k in keys):
+            return ssh_redirect(username, err="Bu anahtar zaten ekli")
+        if key["fingerprint"] and any(k["fingerprint"] == key["fingerprint"] for k in keys):
+            return ssh_redirect(username, err="Bu anahtar zaten ekli (açıklaması farklı)")
+        write_auth_keys(username, keys + [key])
+    except Exception as e:
+        log_action(request, "ssh.key_add", username, str(e), status="error")
+        return ssh_redirect(username, err=str(e)[:160])
+    log_action(request, "ssh.key_add", username,
+               f"{key['label']} {key['fingerprint']}" + (f" ({key['comment']})" if key["comment"] else ""))
+    return ssh_redirect(username, msg=f"{key['label']} anahtarı eklendi")
+
+@app.post("/users/{username}/ssh/generate")
+async def ssh_key_generate(request: Request, username: str, session=Depends(require_login),
+                           key_type: str = Form("ed25519"), comment: str = Form("")):
+    if not find_user(username):
+        return RedirectResponse("/users?err=Kullanıcı+bulunamadı", status_code=302)
+    if key_type not in KEYGEN_TYPES:
+        return ssh_redirect(username, err="Geçersiz anahtar türü")
+    comment = "".join(c for c in comment.strip() if c.isprintable() and c not in '"\\')[:60] \
+              or f"{username}@{get_server_ip()}"
+    try:
+        private, public = generate_keypair(comment, key_type)
+        key = parse_pubkey(public)
+        keys = read_auth_keys(username)
+        write_auth_keys(username, keys + [key])
+        token = stash_generated(username, private, key)
+    except Exception as e:
+        log_action(request, "ssh.key_generate", username, str(e), status="error")
+        return ssh_redirect(username, err=str(e)[:160])
+    log_action(request, "ssh.key_generate", username,
+               f"{key['label']} {key['fingerprint']} ({key['comment']})")
+    return ssh_redirect(username, new=token)
+
+@app.post("/users/{username}/ssh/delete")
+async def ssh_key_delete(request: Request, username: str, session=Depends(require_login),
+                         key_id: str = Form(...)):
+    if not find_user(username):
+        return RedirectResponse("/users?err=Kullanıcı+bulunamadı", status_code=302)
+    try:
+        keys = read_auth_keys(username)
+        gone = [k for k in keys if k["key_id"] == key_id]
+        if not gone:
+            return ssh_redirect(username, err="Anahtar bulunamadı (sayfa eski olabilir)")
+        write_auth_keys(username, [k for k in keys if k["key_id"] != key_id])
+    except Exception as e:
+        log_action(request, "ssh.key_delete", username, str(e), status="error")
+        return ssh_redirect(username, err=str(e)[:160])
+    k = gone[0]
+    log_action(request, "ssh.key_delete", username,
+               f"{k['label']} {k['fingerprint'] or k['line'][:40]}"
+               + (f" ({k['comment']})" if k["comment"] else ""))
+    return ssh_redirect(username, msg=f"{k['label']} anahtarı silindi")
 
 # ══════════════════════════════════════════════════════════
 #  DOMAIN YÖNETİMİ

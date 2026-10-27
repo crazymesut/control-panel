@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}SSH Anahtarları: {{ user.username }} — VPS Panel{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-start justify-between">
+  <div>
+    <a href="/users" class="text-gray-500 hover:text-gray-300 text-xs transition-colors">← Kullanıcılar</a>
+    <h1 class="text-xl font-bold text-white mt-1">
+      🔑 SSH Anahtarları
+      <span class="font-mono text-indigo-300">{{ user.username }}</span>
+    </h1>
+    <p class="text-gray-500 text-sm mt-0.5">
+      Parolasız SSH girişi için genel anahtarlar
+      {% if keys_path %}<span class="font-mono text-gray-600 text-xs">· {{ keys_path }}</span>{% endif %}
+    </p>
+  </div>
+  <span class="px-2.5 py-1 rounded-full text-xs font-medium shrink-0
+    {% if user.status == 'active' %}bg-emerald-900/60 text-emerald-400{% else %}bg-gray-800 text-gray-500{% endif %}">
+    {% if user.status == 'active' %}● Aktif{% else %}○ Pasif{% endif %}
+  </span>
+</div>
+
+<!-- Bildirimler -->
+{% if msg %}
+<div class="mb-4 px-4 py-3 bg-emerald-900/40 border border-emerald-700/50 rounded-lg text-sm text-emerald-300">✓ {{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="mb-4 px-4 py-3 bg-red-900/40 border border-red-700/50 rounded-lg text-sm text-red-300">⚠ {{ err }}</div>
+{% endif %}
+
+{% if user.status != 'active' %}
+<div class="mb-4 px-4 py-3 bg-amber-900/30 border border-amber-700/50 rounded-lg text-sm text-amber-300">
+  Bu kullanıcı pasif durumda — anahtarlar kaydedilir ama kullanıcı aktif edilene kadar SSH ile giriş yapılamaz.
+</div>
+{% endif %}
+
+<!-- ÜRETİLEN ÖZEL ANAHTAR (yalnızca bir kez gösterilir) -->
+{% if generated %}
+<div class="mb-6 bg-amber-950/40 border-2 border-amber-600/60 rounded-xl p-5">
+  <h2 class="text-base font-bold text-amber-200 flex items-center gap-2">
+    ⚠️ Özel anahtar — yalnızca bir kez gösterilir
+  </h2>
+  <p class="text-amber-200/70 text-xs mt-1.5 leading-relaxed">
+    Bu anahtar sunucuda saklanmaz. Şimdi indirin veya kopyalayın; sayfayı yenilediğinizde
+    bir daha gösterilemez. Kaybederseniz anahtarı silip yenisini üretin.
+  </p>
+
+  <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+    <span class="px-2 py-0.5 rounded bg-amber-900/60 text-amber-300 font-medium">{{ generated.key.label }}</span>
+    <span class="text-amber-200/60 font-mono">{{ generated.key.bits }} bit</span>
+    <span class="text-amber-200/60 font-mono break-all">{{ generated.key.fingerprint }}</span>
+  </div>
+
+  <textarea id="privkey" readonly rows="8" spellcheck="false"
+    class="mt-3 w-full bg-gray-950 border border-amber-800/50 rounded-lg px-3 py-2.5
+           text-xs text-amber-100 font-mono resize-y focus:outline-none focus:ring-2 focus:ring-amber-500"
+  >
+{{ generated.private }}</textarea>
+
+  <div class="mt-3 flex flex-wrap gap-2">
+    <button type="button" onclick="downloadKey()"
+      class="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-lg text-xs font-medium transition-colors">
+      ⬇ İndir ({{ filename }})
+    </button>
+    <button type="button" onclick="copyKey()"
+      class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-xs font-medium transition-colors">
+      📋 Kopyala
+    </button>
+    <a href="/users/{{ user.username }}/ssh"
+      class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-lg text-xs transition-colors">
+      Kaydettim, kapat
+    </a>
+  </div>
+
+  <details class="mt-4 text-xs">
+    <summary class="text-amber-200/70 cursor-pointer hover:text-amber-200">Bu anahtarla nasıl bağlanılır?</summary>
+    <pre class="mt-2 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-gray-400 overflow-x-auto"># indirdiğiniz dosyayı yerine koyun ve izinlerini daraltın
+mv ~/Downloads/{{ filename }} ~/.ssh/{{ filename }}
+chmod 600 ~/.ssh/{{ filename }}
+ssh -i ~/.ssh/{{ filename }} {{ user.username }}@{{ server_ip }}</pre>
+  </details>
+</div>
+{% endif %}
+
+<!-- MEVCUT ANAHTARLAR -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-500 text-xs uppercase tracking-wide border-b border-gray-800">
+        <th class="px-5 py-3 text-left">Tür</th>
+        <th class="px-5 py-3 text-left">Parmak İzi</th>
+        <th class="px-5 py-3 text-left">Açıklama</th>
+        <th class="px-5 py-3 text-right">İşlem</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800/50">
+      {% for k in keys %}
+      <tr class="hover:bg-gray-800/30 transition-colors">
+        <td class="px-5 py-3 whitespace-nowrap">
+          <span class="px-2 py-0.5 rounded text-xs font-medium
+            {% if k.type == '?' %}bg-gray-800 text-gray-500{% else %}bg-indigo-900/50 text-indigo-300{% endif %}">
+            {{ k.label }}
+          </span>
+          {% if k.bits %}<span class="text-gray-600 text-xs font-mono ml-1.5">{{ k.bits }} bit</span>{% endif %}
+        </td>
+        <td class="px-5 py-3 font-mono text-gray-400 text-xs break-all">
+          {% if k.fingerprint %}{{ k.fingerprint }}
+          {% else %}<span class="text-gray-600">{{ k.line[:48] }}…</span>{% endif %}
+        </td>
+        <td class="px-5 py-3 text-gray-400 text-xs break-all">
+          {% if k.comment %}{{ k.comment }}
+          {% elif k.type == '?' %}<span class="text-amber-600">panel dışında eklenmiş satır</span>
+          {% else %}<span class="text-gray-700">—</span>{% endif %}
+        </td>
+        <td class="px-5 py-3 text-right">
+          <form method="post" action="/users/{{ user.username }}/ssh/delete" class="inline"
+            onsubmit="return confirm('{{ (k.fingerprint or 'Bu anahtar') | replace("'", '') }} silinsin mi?\n\nAnahtarın sahibi {{ user.username }} olarak SSH ile giremeyecek.')">
+            <input type="hidden" name="key_id" value="{{ k.key_id }}">
+            <button type="submit"
+              class="bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs transition-colors">
+              Sil
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="4" class="px-5 py-10 text-center text-gray-600">
+          Bu kullanıcının kayıtlı SSH anahtarı yok.<br>
+          <span class="text-gray-700 text-xs">Aşağıdan bir genel anahtar ekleyin veya yeni bir çift üretin.</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="mt-6 grid gap-5 lg:grid-cols-2">
+
+  <!-- GENEL ANAHTAR EKLE -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <h2 class="text-sm font-semibold text-white">Genel anahtar ekle</h2>
+    <p class="text-gray-500 text-xs mt-1 leading-relaxed">
+      Kendi bilgisayarınızdaki <span class="font-mono text-gray-400">~/.ssh/id_ed25519.pub</span>
+      dosyasının içeriğini yapıştırın. Özel anahtarınız sizde kalır.
+    </p>
+    <form method="post" action="/users/{{ user.username }}/ssh/add" class="mt-4 space-y-3">
+      <textarea name="pubkey" required rows="4" spellcheck="false"
+        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-xs text-white
+               font-mono resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... ad@bilgisayar"></textarea>
+      <button type="submit"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+        Anahtarı Ekle
+      </button>
+    </form>
+    <details class="mt-3 text-xs">
+      <summary class="text-gray-500 cursor-pointer hover:text-gray-300">Genel anahtarım yok, nasıl üretirim?</summary>
+      <pre class="mt-2 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-gray-400 overflow-x-auto"># kendi bilgisayarınızda çalıştırın
+ssh-keygen -t ed25519 -C "{{ admin }}@bilgisayarim"
+cat ~/.ssh/id_ed25519.pub   # çıktıyı yukarı yapıştırın</pre>
+    </details>
+  </div>
+
+  <!-- YENİ ANAHTAR ÇİFTİ ÜRET -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <h2 class="text-sm font-semibold text-white">Yeni anahtar çifti üret</h2>
+    <p class="text-gray-500 text-xs mt-1 leading-relaxed">
+      Panel anahtar çiftini sunucuda üretir, genel anahtarı kullanıcıya ekler ve özel anahtarı
+      size <span class="text-amber-400">bir kez</span> gösterir. Mümkünse yukarıdaki yöntemi tercih edin —
+      özel anahtar hiç sunucuya uğramaz.
+    </p>
+    <form method="post" action="/users/{{ user.username }}/ssh/generate" class="mt-4 space-y-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">Anahtar Türü</label>
+        <select name="key_type"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <option value="ed25519">ed25519 (önerilen)</option>
+          <option value="rsa">RSA 4096</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">Açıklama</label>
+        <input name="comment" type="text" maxlength="60"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white
+                 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          placeholder="{{ user.username }}@{{ server_ip }}">
+        <p class="text-gray-600 text-xs mt-1">Anahtarı listede tanımanıza yarar (boş bırakılabilir)</p>
+      </div>
+      <button type="submit"
+        class="w-full bg-amber-700 hover:bg-amber-600 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+        Anahtar Çifti Üret
+      </button>
+    </form>
+  </div>
+
+</div>
+
+<!-- BAĞLANMA BİLGİSİ -->
+<div class="mt-5 bg-gray-900/50 border border-gray-800 rounded-xl p-5">
+  <h3 class="text-sm font-semibold text-gray-300 mb-2">🔌 Bağlantı</h3>
+  <pre class="text-xs text-gray-400 font-mono overflow-x-auto">ssh {{ user.username }}@{{ server_ip }}                      # varsayılan anahtarla
+ssh -i ~/.ssh/ozel_anahtar {{ user.username }}@{{ server_ip }}   # belirli bir anahtarla</pre>
+  <p class="text-gray-600 text-xs mt-2 leading-relaxed">
+    Anahtarlar <span class="font-mono">/home/{{ user.username }}/.ssh/authorized_keys</span> dosyasına yazılır.
+    Parola ile giriş de açık kalmaya devam eder; kullanıcıyı “Durdur” ile pasif yapmak her iki yolu da kapatır.
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if generated %}
+<script>
+function copyKey() {
+  const ta = document.getElementById('privkey');
+  navigator.clipboard.writeText(ta.value).then(
+    () => flash('📋 Kopyalandı'),
+    () => { ta.select(); flash('⚠ Kopyalanamadı — Ctrl/Cmd+C ile kopyalayın'); }
+  );
+}
+function downloadKey() {
+  // Özel anahtar yalnızca bu sayfada var; indirme tamamen tarayıcıda yapılır
+  const blob = new Blob([document.getElementById('privkey').value], {type: 'application/octet-stream'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = {{ filename | tojson }};
+  a.click();
+  URL.revokeObjectURL(a.href);
+  flash('⬇ İndirildi');
+}
+function flash(text) {
+  const el = document.createElement('div');
+  el.className = 'fixed bottom-5 right-5 bg-gray-800 border border-gray-700 text-gray-100 ' +
+                 'px-4 py-2.5 rounded-lg text-sm shadow-xl z-50';
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+</script>
+{% endif %}
+{% endblock %}

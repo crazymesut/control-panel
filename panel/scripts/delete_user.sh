@@ -15,6 +15,9 @@ log() { echo "[delete_user] $1"; }
 # ── Docker rootless durdur ──────────────────────────────────
 if id "$USERNAME" &>/dev/null; then
     UID_VAL=$(id -u "$USERNAME")
+    # Pasif kullanıcının hesabı süresi dolmuş işaretlidir; runuser bu durumda
+    # PAM account kontrolüne takılır. Temizlik için süreyi geçici olarak kaldır.
+    chage -E -1 "$USERNAME" 2>/dev/null || true
     runuser -l "$USERNAME" -c "
         export XDG_RUNTIME_DIR=/run/user/$UID_VAL
         systemctl --user stop  docker.service 2>/dev/null || true
