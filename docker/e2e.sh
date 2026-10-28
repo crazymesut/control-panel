@@ -6,7 +6,8 @@
 #
 #  Kapsam: kurulum (setup.sh), giriş, kullanıcı ekle / pasifleştir /
 #  aktifleştir / sil, domain ekle / sil, Nginx editörü, panel domain ayarı,
-#  güncelleme (update.sh) ve setup.sh'in yeniden çalıştırılması.
+#  güncelleme (update.sh), panelden güncelleme (Ayarlar butonu → deploy.sh)
+#  ve setup.sh'in yeniden çalıştırılması.
 #  Kapsam dışı: Let's Encrypt (genel DNS ve erişilebilir 80/443 gerekir).
 #
 #  Ortam değişkenleri:
@@ -62,6 +63,7 @@ urldecode(){ python3 -c 'import sys, urllib.parse as u; print(u.unquote_plus(sys
 # Panele POST at; HTTP kodu CODE'a, çözülmüş yönlendirme adresi LOC'a, gövde $BODY'ye yazılır
 post() {
     local path="$1" out; shift
+    [[ $# -eq 0 ]] && set -- -d ''   # gövdesiz çağrıda curl GET atardı
     out="$(curl -sk -b "$JAR" -o "$BODY" -w '%{http_code} %{redirect_url}' "$@" "$BASE$path")"
     CODE="${out%% *}"; LOC="$(urldecode "${out#* }")"
 }
@@ -105,7 +107,7 @@ wait_port() {   # $1=port
 
 cleanup() {
     [[ -n "$BACKEND_PID" ]] && kill "$BACKEND_PID" 2>/dev/null
-    rm -rf "$JAR" "$BODY" "$WWW" "$KEYS" /tmp/e2e-update-src /tmp/e2e-nginx-*
+    rm -rf "$JAR" "$BODY" "$WWW" "$KEYS" /tmp/e2e-update-src /tmp/e2e-nginx-* /tmp/e2e-deploy-*
 }
 trap cleanup EXIT
 
@@ -582,7 +584,96 @@ eq "panel domain ayarı korundu" 200 "$(web_code $PANEL_DOMAIN /login)"
 [[ "$(db "SELECT COUNT(*) FROM activity_log")" -ge "$LOGS_BEFORE" ]] && ok "etkinlik geçmişi korundu" || bad "etkinlik geçmişi azaldı"
 
 # ============================================================
-section "14 — setup.sh'i yeniden çalıştırma (idempotency)"
+section "14 — Panelden güncelleme (Ayarlar butonu → deploy.sh)"
+# ============================================================
+# Gerçek bir git deposu gerekir: origin (bare) + panelin güncelleyeceği checkout.
+ORG=/tmp/e2e-deploy-origin.git; WRK=/tmp/e2e-deploy-work; CO=/tmp/e2e-deploy-co
+UPD_LOG=/var/log/vps-panel-update.log
+GIT_ID=(-c user.name=e2e -c user.email=e2e@example.com)
+rm -rf "$ORG" "$WRK" "$CO"
+git init -q --bare "$ORG"
+git init -q -b main "$WRK"
+tar -C "$SRC" --exclude=.git -cf - . | tar -C "$WRK" -xf -
+git -C "$WRK" add -A
+git -C "$WRK" "${GIT_ID[@]}" commit -qm "e2e: ilk sürüm"
+git -C "$WRK" push -q "$ORG" main
+git clone -q -b main "$ORG" "$CO"
+
+wait_update() {   # deploy.sh log'a başarı ya da hata satırı yazınca biter
+    for _ in $(seq 1 120); do
+        grep -qE 'Dağıtım tamamlandı|\[✗\]' "$UPD_LOG" 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# Depo kayıtlı değilken buton çalışmaz
+rm -f "$PANEL_DIR/.repo_dir"
+login >/dev/null
+get /settings
+contains "depo kayıtlı değilken uyarı gösteriliyor" "$(cat "$BODY")" "Git deposu kayıtlı değil"
+post /settings/update
+contains "depo kayıtlı değilken güncelleme reddediliyor" "$LOC" "Git deposu kayıtlı değil"
+
+# update.sh checkout'tan çalıştırılınca yolu kaydeder
+bash "$CO/update.sh" > /tmp/e2e-deploy-first.log 2>&1
+eq "update.sh checkout yolunu kaydetti (.repo_dir)" "$CO" "$(cat "$PANEL_DIR/.repo_dir" 2>/dev/null)"
+wait_panel || bad "panel yanıt vermiyor"
+login >/dev/null
+get /settings
+contains "Güncelle butonu görünüyor" "$(cat "$BODY")" 'action="/settings/update"'
+contains "kurulu sürüm gösteriliyor" "$(cat "$BODY")" "e2e: ilk sürüm"
+
+# Başarılı güncelleme: origin'e yeni commit → butona bas
+SNAP_BEFORE="$(snap)"
+MARK2="e2e-deploy-marker-$RANDOM"
+echo "<!-- $MARK2 -->" >> "$WRK/panel/templates/login.html"
+git -C "$WRK" "${GIT_ID[@]}" commit -qam "e2e: panelden güncelleme"
+git -C "$WRK" push -q "$ORG" main
+
+post /settings/update
+contains "güncelleme başlatıldı" "$LOC" "Güncelleme başlatıldı"
+wait_update && ok "dağıtım sona erdi" || bad "dağıtım zaman aşımına uğradı" "$(tail -5 "$UPD_LOG" 2>/dev/null)"
+contains "log: yeni commit çekildi" "$(cat "$UPD_LOG")" "Kod güncellendi"
+contains "log: dağıtım tamamlandı" "$(cat "$UPD_LOG")" "Dağıtım tamamlandı"
+wait_panel && ok "dağıtım sonrası panel yanıt veriyor" || bad "dağıtım sonrası panel yanıt vermiyor"
+contains "yeni commit panelde sunuluyor" "$(curl -sk $BASE/login)" "$MARK2"
+eq "checkout origin ile aynı commit'te" "$(git -C "$ORG" rev-parse main)" "$(git -C "$CO" rev-parse HEAD)"
+eq "DB, ayarlar ve .env korundu" "$SNAP_BEFORE" "$(snap)"
+eq "oturum sıfırlandı (servis yeniden başladı)" 307 "$(curl -sk -b "$JAR" -o /dev/null -w '%{http_code}' "$BASE/")"
+eq "yeniden giriş" 302 "$(login)"
+get /settings
+contains "Ayarlar son çıktıyı gösteriyor" "$(cat "$BODY")" "Dağıtım tamamlandı"
+get /settings/update/status
+contains "durum uç noktası: iş bitti" "$(cat "$BODY")" '"running":false'
+[[ "$(db "SELECT COUNT(*) FROM activity_log WHERE action='settings.update' AND status='ok'")" -ge 1 ]] \
+    && ok "kayıt var: settings.update" || bad "kayıt yok: settings.update"
+
+# Aynı anda iki dağıtım olmaz (kilidi ayrı bir süreç tutar; alt kabuk içinde tutmak
+# işe yaramaz, bash son komutu fork etmeden exec eder ve kilit düşer)
+flock -n /run/vps-panel-deploy.lock sleep 8 & HOLD=$!
+sleep 1
+out="$(bash "$CO/deploy.sh" 2>&1 || true)"
+wait "$HOLD" 2>/dev/null
+contains "eşzamanlı ikinci dağıtım reddediliyor" "$out" "Başka bir dağıtım çalışıyor"
+
+# Başarısız güncelleme: checkout origin'den ayrışırsa pull reddedilir, çalışan panele dokunulmaz
+echo yerel > "$CO/local.txt"
+git -C "$CO" add local.txt; git -C "$CO" "${GIT_ID[@]}" commit -qm "e2e: yerel commit"
+echo uzak > "$WRK/remote.txt"
+git -C "$WRK" add remote.txt; git -C "$WRK" "${GIT_ID[@]}" commit -qm "e2e: uzak commit"
+git -C "$WRK" push -q "$ORG" main
+post /settings/update
+contains "ayrışmış dalda da güncelleme başlatılıyor" "$LOC" "Güncelleme başlatıldı"
+wait_update && ok "başarısız dağıtım sona erdi" || bad "başarısız dağıtım zaman aşımına uğradı"
+contains "log: git pull hatası gösteriliyor" "$(cat "$UPD_LOG")" "git pull başarısız"
+absent "log: başarı satırı yok" "$(cat "$UPD_LOG")" "Dağıtım tamamlandı"
+get /settings
+eq "başarısız dağıtım sonrası panel ve oturum yerinde" 200 "$CODE"
+git -C "$CO" reset -q --hard origin/main
+
+# ============================================================
+section "15 — setup.sh'i yeniden çalıştırma (idempotency)"
 # ============================================================
 SNAP_BEFORE="$(snap)"
 PANEL_PASSWORD="$ADMIN_PASS" PANEL_ADMIN="$ADMIN" PANEL_EMAIL=e2e@example.com \
@@ -602,7 +693,7 @@ eq "admin girişi çalışıyor" 302 "$(login)"
 eq ".env'deki dahili port satırı geçerli" 1 "$(grep -cE '^PANEL_PORT_INTERNAL=[0-9]+$' $PANEL_DIR/.env)"
 
 # ============================================================
-section "15 — Temizlik: panel domaini ve kullanıcı silme (container çalışırken)"
+section "16 — Temizlik: panel domaini ve kullanıcı silme (container çalışırken)"
 # ============================================================
 post /settings/domain-remove
 contains "panel domain ayarı kaldırıldı" "$LOC" "kaldırıldı"

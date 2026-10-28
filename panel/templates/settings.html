@@ -72,6 +72,38 @@
   {% endif %}
 </div>
 
+<!-- Panel Güncelleme -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+  <h2 class="text-sm font-semibold text-gray-300 mb-4">🔄 Panel Güncelleme</h2>
+
+  {% if update_repo %}
+  <div class="mb-4 p-4 bg-gray-800/60 rounded-lg">
+    <div class="text-xs text-gray-500 mb-1">Kurulu sürüm <span class="font-mono">({{ update_repo }})</span></div>
+    <div class="font-mono text-indigo-300 text-sm break-all">{{ update_version or '?' }}</div>
+  </div>
+
+  <form method="post" action="/settings/update"
+    onsubmit="return confirm('Son kod çekilecek (git pull), panel güncellenecek ve servis yeniden başlatılacak. Oturumunuz kapanır; tekrar giriş yapmanız gerekir. Devam?')">
+    <button type="submit" {% if update_running %}disabled{% endif %}
+      class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">
+      {% if update_running %}Güncelleniyor…{% else %}Güncelle{% endif %}
+    </button>
+    <span class="text-gray-600 text-xs ml-3">git pull --ff-only → update.sh → sağlık kontrolü</span>
+  </form>
+  {% else %}
+  <div class="px-3 py-2 bg-amber-900/30 border border-amber-700/40 rounded-lg text-xs text-amber-300">
+    Git deposu kayıtlı değil. Sunucuda depo dizininde bir kez
+    <span class="font-mono">sudo bash update.sh</span> çalıştırın; sonrasında güncelleme bu sayfadan yapılabilir.
+  </div>
+  {% endif %}
+
+  {% if update_log or update_running %}
+  <div id="update-note" class="mt-4 text-xs text-gray-500">{% if update_running %}Güncelleme sürüyor…{% else %}Son güncellemenin çıktısı{% endif %}</div>
+  <pre id="update-log" class="mt-1 px-4 py-3 bg-gray-950 border border-gray-800 rounded-lg text-xs text-gray-300 font-mono whitespace-pre-wrap break-all overflow-auto"
+    style="max-height:20rem">{{ update_log }}</pre>
+  {% endif %}
+</div>
+
 <!-- Bilgi Kartı -->
 <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-5">
   <h3 class="text-sm font-semibold text-gray-300 mb-2">ℹ️ Nasıl Çalışır?</h3>
@@ -81,4 +113,32 @@
     Eski IP:port erişimi de çalışmaya devam eder.
   </p>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% if update_running %}
+<script>
+(() => {
+  const box = document.getElementById('update-log');
+  const note = document.getElementById('update-note');
+  const tick = async () => {
+    try {
+      const r = await fetch('/settings/update/status', {headers: {Accept: 'application/json'}});
+      if (!(r.headers.get('content-type') || '').includes('json')) {
+        // Servis yeniden başladı, bellekteki oturumlar silindi → /login'e yönlendirildik
+        note.textContent = 'Panel yeniden başlatıldı ve oturum kapandı. Sonucu görmek için tekrar giriş yapın.';
+        return;
+      }
+      const s = await r.json();
+      box.textContent = s.log;
+      box.scrollTop = box.scrollHeight;
+      if (!s.running) { location.reload(); return; }
+    } catch (_) { /* servis yeniden başlıyor; tekrar dene */ }
+    setTimeout(tick, 2000);
+  };
+  box.scrollTop = box.scrollHeight;
+  tick();
+})();
+</script>
+{% endif %}
 {% endblock %}

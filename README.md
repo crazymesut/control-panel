@@ -134,12 +134,39 @@ sudo ufw status
 
 For backups, include `/opt/vps-panel` (especially `panel.db`, `.env`, and `settings.json`), `/home`, relevant Nginx configurations, and `/etc/letsencrypt`. Stop the panel service while copying its SQLite database for a consistent file backup. Protect backups because they contain credentials, certificates, and user data.
 
+### Update from the panel
+
+**Settings → Panel Update → Update** runs `deploy.sh` on the server: `git pull --ff-only`, `update.sh`, then a health check of the panel. It starts as a separate systemd unit (`vps-panel-update`), so the service restart does not kill it; the output is kept in `/var/log/vps-panel-update.log` and shown on the page. The restart clears login sessions, so sign in again afterwards. You can also run `sudo bash deploy.sh` on the server instead of the two commands above.
+
+The button needs to know which checkout to pull. `setup.sh` and `update.sh` record it in `/opt/vps-panel/.repo_dir` when run from a git checkout, so run `sudo bash update.sh` once from the checkout after upgrading to this version.
+
+### CI/CD with GitHub Actions
+
+`.github/workflows/ci-cd.yml` checks every push and pull request (shell syntax, `main.py` imports, every template compiles). A push to `main` that passes the checks then connects to the server over SSH and runs `deploy.sh`.
+
+The server's checkout must be able to `git pull` without prompting (public repository, or a read-only deploy key or token configured on the server). One-time setup:
+
+1. Create a key used only for deploys: `ssh-keygen -t ed25519 -N '' -C github-deploy -f deploy_key`.
+2. On the server, add the public key to `/root/.ssh/authorized_keys` locked to the deploy command (adjust the path to your checkout), so a leaked key can do nothing else:
+
+   ```text
+   command="cd /root/vps-panel && bash deploy.sh",restrict ssh-ed25519 AAAA... github-deploy
+   ```
+
+3. In the repository under **Settings → Secrets and variables → Actions**, add the secrets `DEPLOY_HOST` (server address), `DEPLOY_SSH_KEY` (contents of the private `deploy_key`) and `DEPLOY_KNOWN_HOSTS` (output of `ssh-keyscan -p 22 <host>`; compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server). Optional variables: `DEPLOY_USER` (default `root`), `DEPLOY_PORT` (default `22`), `DEPLOY_PATH` (default `~/vps-panel`).
+4. Delete the local `deploy_key` and `deploy_key.pub`.
+
+Anyone who can push to `main` can run code as root on the server through this pipeline, so enable branch protection on `main`. A run can also be started manually from the Actions tab.
+
 ## Project layout
 
 ```text
 control-panel/
 ├── setup.sh                  # System and application installer
 ├── update.sh                 # Application updater
+├── deploy.sh                 # git pull + update.sh + health check (panel button, CI/CD)
+├── .github/workflows/
+│   └── ci-cd.yml             # Checks on every push; deploys main to the server over SSH
 └── panel/
     ├── main.py               # FastAPI application and SQLite initialization
     ├── panel.db.example      # Empty SQLite schema; copied to panel.db on first install only

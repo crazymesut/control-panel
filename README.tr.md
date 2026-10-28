@@ -134,12 +134,39 @@ sudo ufw status
 
 Yedeklere `/opt/vps-panel` dizinini (özellikle `panel.db`, `.env` ve `settings.json`), `/home`, ilgili Nginx yapılandırmalarını ve `/etc/letsencrypt` dizinini dahil edin. Tutarlı bir dosya yedeği için SQLite veritabanını kopyalarken panel servisini durdurun. Yedekler giriş bilgileri, sertifikalar ve kullanıcı verileri içerdiğinden bunları koruyun.
 
+### Panelden güncelleme
+
+**Ayarlar → Panel Güncelleme → Güncelle** sunucuda `deploy.sh` çalıştırır: `git pull --ff-only`, `update.sh` ve ardından panelin sağlık kontrolü. Ayrı bir systemd biriminde (`vps-panel-update`) başlar; böylece servisin yeniden başlaması betiği öldürmez. Çıktı `/var/log/vps-panel-update.log` dosyasında tutulur ve sayfada gösterilir. Yeniden başlatma giriş oturumlarını temizler, bu yüzden sonrasında tekrar giriş yapın. Yukarıdaki iki komut yerine sunucuda `sudo bash deploy.sh` da çalıştırabilirsiniz.
+
+Buton hangi checkout'u çekeceğini bilmelidir. `setup.sh` ve `update.sh` bir git checkout'undan çalıştırıldıklarında yolu `/opt/vps-panel/.repo_dir` dosyasına kaydeder; bu sürüme geçtikten sonra checkout'ta bir kez `sudo bash update.sh` çalıştırın.
+
+### GitHub Actions ile CI/CD
+
+`.github/workflows/ci-cd.yml` her push ve pull request'i kontrol eder (kabuk sözdizimi, `main.py` içe aktarma, tüm şablonların derlenmesi). Kontrolleri geçen `main` push'u sunucuya SSH ile bağlanıp `deploy.sh` çalıştırır.
+
+Sunucudaki checkout'un parola sormadan `git pull` yapabilmesi gerekir (herkese açık depo ya da sunucuda tanımlı salt okunur deploy anahtarı veya token). Tek seferlik kurulum:
+
+1. Yalnızca dağıtım için bir anahtar üretin: `ssh-keygen -t ed25519 -N '' -C github-deploy -f deploy_key`.
+2. Sunucuda genel anahtarı `/root/.ssh/authorized_keys` dosyasına dağıtım komutuna kilitleyerek ekleyin (yolu kendi checkout'unuza göre düzenleyin); anahtar sızsa bile başka bir şey çalıştıramaz:
+
+   ```text
+   command="cd /root/vps-panel && bash deploy.sh",restrict ssh-ed25519 AAAA... github-deploy
+   ```
+
+3. Depoda **Settings → Secrets and variables → Actions** altında `DEPLOY_HOST` (sunucu adresi), `DEPLOY_SSH_KEY` (özel `deploy_key` içeriği) ve `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan -p 22 <host>` çıktısı; sunucudaki `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` ile karşılaştırın) secret'larını ekleyin. İsteğe bağlı değişkenler: `DEPLOY_USER` (varsayılan `root`), `DEPLOY_PORT` (varsayılan `22`), `DEPLOY_PATH` (varsayılan `~/vps-panel`).
+4. Yerel `deploy_key` ve `deploy_key.pub` dosyalarını silin.
+
+`main`'e push yapabilen herkes bu hat üzerinden sunucuda root olarak kod çalıştırabilir; bu yüzden `main` için dal koruması açın. Actions sekmesinden elle de çalıştırılabilir.
+
 ## Proje yapısı
 
 ```text
 control-panel/
 ├── setup.sh                  # Sistem ve uygulama kurulumu
 ├── update.sh                 # Uygulama güncellemesi
+├── deploy.sh                 # git pull + update.sh + sağlık kontrolü (panel butonu, CI/CD)
+├── .github/workflows/
+│   └── ci-cd.yml             # Her push'ta kontroller; main'i SSH ile sunucuya dağıtır
 └── panel/
     ├── main.py               # FastAPI uygulaması ve SQLite başlangıç işlemleri
     ├── panel.db.example      # Boş SQLite şeması; yalnızca ilk kurulumda panel.db olarak kopyalanır

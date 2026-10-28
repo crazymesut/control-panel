@@ -29,6 +29,11 @@ tar -C "$SCRIPT_DIR/panel" \
     -cf - . | tar -C "$PANEL_DIR" -xf -
 log "Panel dosyaları güncellendi (DB ve ayarlar korundu)"
 
+# Panel butonu (Ayarlar > Panel Güncelleme) deploy.sh'i bu checkout'ta çalıştırır
+if [[ -e "$SCRIPT_DIR/.git" ]]; then
+    echo "$SCRIPT_DIR" > "$PANEL_DIR/.repo_dir"
+fi
+
 # Yeni Python bağımlılıklarını yükle
 info "Python bağımlılıkları kontrol ediliyor..."
 "$PANEL_DIR/venv/bin/pip" install -q --upgrade \

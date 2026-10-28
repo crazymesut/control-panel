@@ -214,6 +214,11 @@ if [[ -d "$SCRIPT_DIR/panel" ]]; then
         -cf - . | tar -C "$PANEL_DIR" -xf -
     log "Panel dosyaları kopyalandı"
 
+    # Panel butonu (Ayarlar > Panel Güncelleme) deploy.sh'i bu checkout'ta çalıştırır
+    if [[ -e "$SCRIPT_DIR/.git" ]]; then
+        echo "$SCRIPT_DIR" > "$PANEL_DIR/.repo_dir"
+    fi
+
     # Veritabanı yalnızca ilk kurulumda şablondan oluşturulur; varsa dokunulmaz
     if [[ ! -f "$PANEL_DIR/panel.db" ]]; then
         cp "$SCRIPT_DIR/panel/panel.db.example" "$PANEL_DIR/panel.db"

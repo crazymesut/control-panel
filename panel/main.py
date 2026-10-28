@@ -155,6 +155,7 @@ ACTION_LABELS = {
     "nginx.reload":          "Nginx reload",
     "settings.domain":       "Panel domain ayarı",
     "settings.domain_remove": "Panel domain kaldırma",
+    "settings.update":       "Panel güncelleme",
 }
 templates.env.globals["ACTION_LABELS"] = ACTION_LABELS
 
@@ -1111,6 +1112,36 @@ def load_settings() -> dict:
 def save_settings(data: dict):
     SETTINGS_FILE.write_text(json.dumps(data, indent=2))
 
+# ── Panel güncelleme (deploy.sh: git pull + update.sh) ─────
+UPDATE_UNIT   = "vps-panel-update"
+UPDATE_LOG    = Path("/var/log/vps-panel-update.log")
+REPO_DIR_FILE = BASE_DIR / ".repo_dir"   # setup.sh / update.sh checkout yolunu buraya yazar
+UPDATE_TAIL   = 60                       # arayüzde gösterilecek son satır sayısı
+ANSI_RE       = re.compile(r"\x1b\[[0-9;]*m")
+
+def update_repo_dir() -> Optional[Path]:
+    """deploy.sh'in bulunduğu git checkout'u; kayıtlı değilse ya da bozuksa None."""
+    try:
+        d = Path(REPO_DIR_FILE.read_text().strip())
+    except OSError:
+        return None
+    return d if (d / "deploy.sh").is_file() and (d / ".git").exists() else None
+
+def update_running() -> bool:
+    _, out, _ = run(["systemctl", "is-active", UPDATE_UNIT], check=False)
+    return out in ("active", "activating")
+
+def update_log_tail() -> str:
+    try:
+        lines = UPDATE_LOG.read_text(errors="replace").splitlines()[-UPDATE_TAIL:]
+    except OSError:
+        return ""
+    return ANSI_RE.sub("", "\n".join(lines))
+
+def update_version(repo: Path) -> str:
+    _, out, _ = run(["git", "-C", str(repo), "log", "-1", "--format=%h · %s · %cs"], check=False)
+    return out
+
 def get_server_ip() -> str:
     try:
         r = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=3)
@@ -1162,12 +1193,17 @@ async def settings_page(request: Request, session=Depends(require_login),
     ssl_ok = False
     if panel_domain:
         ssl_ok = (SSL_DIR / panel_domain / "fullchain.pem").exists()
+    repo = update_repo_dir()
     return templates.TemplateResponse(request, "settings.html", {
         "admin":           session["admin"],
         "server_ip":       get_server_ip(),
         "panel_port":      os.environ.get("PANEL_PORT", "8765"),
         "panel_domain":    panel_domain,
         "panel_domain_ssl": ssl_ok,
+        "update_repo":     str(repo) if repo else "",
+        "update_version":  update_version(repo) if repo else "",
+        "update_running":  update_running(),
+        "update_log":      update_log_tail(),
         "msg": msg,
         "err": err,
     })
@@ -1214,6 +1250,34 @@ async def settings_domain_remove(request: Request, session=Depends(require_login
     if domain:
         log_action(request, "settings.domain_remove", domain)
     return RedirectResponse("/settings?msg=Panel+domain+ayarı+kaldırıldı", status_code=302)
+
+@app.post("/settings/update")
+async def settings_update(request: Request, session=Depends(require_login)):
+    """deploy.sh'i systemd-run ile ayrı bir birimde başlat. Script servisi yeniden
+    başlattığı için panel sürecinin çocuğu olarak çalışsa kendisi de öldürülürdü."""
+    repo = update_repo_dir()
+    if not repo:
+        return RedirectResponse(
+            "/settings?err=Git+deposu+kayıtlı+değil:+sunucuda+depo+dizininde+bir+kez+sudo+bash+update.sh+çalıştırın",
+            status_code=302)
+    if update_running():
+        return RedirectResponse("/settings?msg=Güncelleme+zaten+çalışıyor", status_code=302)
+    try:
+        UPDATE_LOG.write_text("")
+        run(["systemd-run", f"--unit={UPDATE_UNIT}", "--collect", "--no-block",
+             "--description=VPS Panel güncelleme",
+             "-p", f"StandardOutput=append:{UPDATE_LOG}",
+             "-p", f"StandardError=append:{UPDATE_LOG}",
+             "/bin/bash", str(repo / "deploy.sh")])
+    except Exception as e:
+        log_action(request, "settings.update", str(repo), str(e), status="error")
+        return RedirectResponse(f"/settings?err=Güncelleme+başlatılamadı:+{str(e)[:120]}", status_code=302)
+    log_action(request, "settings.update", str(repo))
+    return RedirectResponse("/settings?msg=Güncelleme+başlatıldı", status_code=302)
+
+@app.get("/settings/update/status")
+async def settings_update_status(session=Depends(require_login)):
+    return {"running": update_running(), "log": update_log_tail()}
 
 # ══════════════════════════════════════════════════════════
 #  API — Sistem Durumu (AJAX için)

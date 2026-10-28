@@ -1,0 +1,77 @@
+# ============================================================
+#  VPS Panel — CI/CD
+#  - Her push ve PR: sözdizimi + şablon kontrolleri (check)
+#  - main'e push (ya da elle "Run workflow"): kontroller geçerse sunucuya
+#    SSH ile bağlanıp deploy.sh çalıştırılır (git pull --ff-only → update.sh
+#    → sağlık kontrolü).
+#
+#  Tek seferlik kurulum (secret'lar, SSH anahtarı): README > CI/CD
+# ============================================================
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bash sözdizimi
+        run: |
+          for f in setup.sh update.sh deploy.sh docker/e2e.sh panel/scripts/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: Python ve Jinja2 şablonları
+        run: |
+          # update.sh'teki bağımlılık listesiyle aynı
+          pip install -q fastapi "uvicorn[standard]" jinja2 python-multipart bcrypt aiofiles psutil
+          mkdir -p panel/static
+          cd panel
+          python - <<'PY'
+          import main
+          names = main.templates.env.list_templates()
+          for name in names:
+              main.templates.env.get_template(name)
+          print(f"OK: main.py içe aktarıldı, {len(names)} şablon derlendi")
+          PY
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Sunucuya dağıt
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '~/vps-panel' }}
+        run: |
+          for v in DEPLOY_HOST DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            [[ -n "${!v}" ]] || { echo "::error::$v secret'ı tanımlı değil (README > CI/CD)"; exit 1; }
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -p "$DEPLOY_PORT" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH && bash deploy.sh"
